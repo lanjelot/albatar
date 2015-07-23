@@ -22,15 +22,15 @@ __banner__  = 'Albatar v%s (%s)' % (__version__, __url__)
 # logging / imports / utils {{{
 import logging
 
-f1 = logging.Formatter('%(asctime)s %(name)s - %(message)s', datefmt='%H:%M:%S')
-f2 = logging.Formatter('%(asctime)s %(name)s %(levelname)7s %(threadName)s - %(message)s', datefmt='%H:%M:%S')
+fmt1 = logging.Formatter('%(asctime)s %(name)s - %(message)s', datefmt='%H:%M:%S')
+fmt2 = logging.Formatter('%(asctime)s %(name)s %(levelname)7s %(threadName)s - %(message)s', datefmt='%H:%M:%S')
 
 sh = logging.StreamHandler()
-sh.setFormatter(f1)
+sh.setFormatter(fmt1)
 sh.setLevel(logging.INFO)
 
 fh = logging.FileHandler('albatar.log')
-fh.setFormatter(f2)
+fh.setFormatter(fmt2)
 fh.setLevel(logging.DEBUG)
 
 logger = logging.getLogger('albatar')
@@ -108,9 +108,9 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
         auth = requests.auth.HTTPBasicAuth(u, p)
 
     self.session = requests.Session()
-    self.proxies = proxies
-    self.auth = auth
-    self.cert = ssl_cert
+    self.session.proxies = proxies
+    self.session.auth = auth
+    self.session.cert = ssl_cert
 
   def test(self, payload):
 
@@ -221,10 +221,12 @@ Requester_HTTP = Requester_HTTP_requests
 # Method {{{
 class Method_Base:
 
-  def __init__(self, make_requester, template, num_threads=7):
+  def __init__(self, make_requester, template, num_threads=7, rate_limit=0, confirm_char=False):
     self.make_requester = make_requester
     self.template = template
     self.num_threads = num_threads
+    self.rate_limit = rate_limit
+    self.confirm_char = confirm_char
 
   def execute(self, query, start_offset, stop_offset):
     logger.info('Executing: %s' % repr(query))
@@ -271,6 +273,15 @@ class Method_binary(Method_Base):
 class Method_bitwise(Method_Base):
   '''Bit ANDing'''
 
+  def get_state(self):
+    while True:
+      try:
+        tid, state = self.resultq.get(False, 1)
+        break
+      except Empty:
+        pass
+    return tid, state
+
   def get_row(self, row_pos=0):
 
     logger.debug('query: %s' % self.query)
@@ -278,32 +289,38 @@ class Method_bitwise(Method_Base):
     result = ''
     char_pos = 1
     while True:
+      sleep(self.rate_limit)
 
       for bit_pos in range(7):
-        payload = self.make_payload(query=self.query, char_pos=char_pos, bit_pos=1<<bit_pos, row_pos=row_pos)
+        payload = self.make_payload(query=self.query, char_pos=char_pos, bit_mask=1<<bit_pos, row_pos=row_pos)
         self.taskq.put_nowait((bit_pos, payload))
 
       char = 0
       for _ in range(7):
-        while True:
-          try:
-            bit_pos, state = self.resultq.get(False, 1)
-            break
-          except Empty:
-            pass
-
+        bit_pos, state = self.get_state()
         char |= state << bit_pos
 
       logger.debug('char: %d (%s)' % (char, repr(chr(char))))
-
-      sys.stdout.write('%s' % chr(char))
-      sys.stdout.flush()
 
       if char >= 127:
         continue
 
       if char == 0:
         break
+
+      if self.confirm_char:
+
+        payload = self.make_payload(query=self.query, char_pos=char_pos, bit_mask=char, row_pos=row_pos)
+        self.taskq.put_nowait((0, payload))
+
+        _, state = self.get_state()
+        if not state:
+          requester = self.make_requester()
+          logger.debug('could not confirm char')
+          continue
+
+      sys.stdout.write('%s' % chr(char))
+      sys.stdout.flush()
 
       result += chr(char)
       char_pos += 1

