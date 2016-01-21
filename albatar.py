@@ -42,15 +42,22 @@ from threading import Thread
 from urlparse import urlparse, urlunparse
 from string import Template
 import sys
+
+missing = []
 try:
   import requests
   from requests.auth import HTTPBasicAuth
 except ImportError:
-  try:
-    import pycurl
-    from StringIO import StringIO
-  except ImportError:
-    logger.error('python-requests or pycurl required')
+  missing.append('requests')
+
+try:
+  import pycurl
+  from StringIO import StringIO
+except ImportError:
+  missing.append('pycurl')
+
+if len(missing) == 2:
+  logger.error('python-requests or pycurl required')
 
 def T(s, **kwargs):
   return Template(s).safe_substitute(**kwargs)
@@ -105,6 +112,7 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
     self.session.proxies = proxies
     self.session.auth = auth
     self.session.cert = ssl_cert
+    self.session.verify = False
 
   def test(self, payload):
 
@@ -117,9 +125,7 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
     if method.upper() == 'POST':
       headers['Content-Type'] = 'application/x-www-form-urlencoded'
 
-    response = self.session.send(
-      self.session.prepare_request(
-        requests.Request(url=url, method=method, headers=headers, data=body)))
+    response = self.session.request(url=url, method=method, headers=headers, data=body, allow_redirects=False)
 
     header_data = '\r\n'.join('%s: %s' % (k, v) for k, v in response.headers.iteritems())
 
@@ -213,7 +219,6 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     return self.review_response(payload, status_code, header_data, response_data, response_time, content_length)
 
 Requester_HTTP = Requester_HTTP_requests
-#Requester_HTTP = Requester_HTTP_pycurl
 # }}}
 
 # Method {{{
@@ -240,12 +245,11 @@ class Method_Base(object):
 
     else:
       if stop_index == 1:
-        c, _ = query
-        total_count = self.get_row(c)
+        c, q = query
+        count = self.get_row(c)
 
-        logger.info('count: %s' % repr(total_count))
-        stop_index = int(total_count[0])
-        _, q = query
+        logger.info('count: %s' % count)
+        stop_index = int(count[0])
 
     logger.debug('retrieving %d rows, starting at row %d' % (stop_index-start_index, start_index))
 
