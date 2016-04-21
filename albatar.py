@@ -265,7 +265,7 @@ class Method_Base(object):
     else:
       if stop_index == 1:
         c, q = query
-        count = self.get_row(c)
+        count = ''.join(self.get_row(c))
 
         logger.info('count: %s' % count)
         stop_index = int(count)
