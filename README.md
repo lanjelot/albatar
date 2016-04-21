@@ -10,7 +10,7 @@ Currently, Albatar supports MySQL, MSSQL and Oracle with the Union, Error, Boole
 
 * Simple boolean-based SQLI (MySQL)
 
-Let's use Albatar to exploit a dead-simple SQLI at http://testasp.vulnweb.com/showforum.asp?id=1. Clone the repository, and create the below script:
+Let's use Albatar to exploit a dead-simple SQLI at http://testphp.vulnweb.com/listproducts.php?cat=1. Clone the repository, and create the below script:
 ```python
 from albatar import *
 from urllib import quote
@@ -55,4 +55,7 @@ $ python testphp.py -b
 5.1.73-0ubuntu0.10.04.1
 14:19:41 albatar - Time: 0h 0m 19s
 ```
+* Encoding / WAF evasion
 
+If you need to encode your payload to meet specific requirements, simply code a function to mangle the payload in every request.
+The web task [luhn-300](https://github.com/ctfs/write-ups-2016/tree/master/nullcon-hackim-2016/web/luhn-300) for Hackim CTF 2016 was a good example to showcase this.
