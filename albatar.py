@@ -61,6 +61,9 @@ except ImportError:
 if len(missing) == 2:
   logger.error('python-requests or pycurl required')
 
+def pprint_seconds(seconds, fmt):
+  return fmt % reduce(lambda x,y: divmod(x[0], y) + x[1:], [(seconds,), 60, 60])
+
 def T(s, **kwargs):
   return Template(s).safe_substitute(**kwargs)
 
@@ -84,10 +87,11 @@ class Timing:
 class Requester_HTTP_Base(object):
 
   def __init__(self, response_processor, url, method='GET', body='', headers=[],
-    auth_type='basic', auth_creds='', proxies={}, ssl_cert='', encode_payload=lambda x: x):
+    auth_type='basic', auth_creds='', proxies={}, ssl_cert='', encode_payload=lambda x: x,
+    accepted_cookies=[]):
 
     self.response_processor = response_processor
-    self.http_opts = [url, method, body, headers, auth_type, auth_creds, proxies, ssl_cert]
+    self.http_opts = [url, method, body, headers, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies]
     self.encode_payload = encode_payload
 
   def review_response(self, payload, status_code, header_data, response_data, response_time, content_length):
@@ -96,12 +100,24 @@ class Requester_HTTP_Base(object):
 
     return self.response_processor(header_data, response_data, response_time)
 
+from cookielib import DefaultCookiePolicy
+class CustomCookiePolicy(DefaultCookiePolicy):
+  def __init__(self, accepted_cookies):
+    self.accepted_cookies = accepted_cookies
+    DefaultCookiePolicy.__init__(self)
+
+  def set_ok(self, cookie, request):
+    if cookie.name in self.accepted_cookies:
+      return DefaultCookiePolicy.set_ok(self, cookie, request)
+    else:
+      return False
+
 class Requester_HTTP_requests(Requester_HTTP_Base):
 
   def __init__(self, *args, **kwargs):
     super(Requester_HTTP_requests, self).__init__(*args, **kwargs)
 
-    _, _, _, _, auth_type, auth_creds, proxies, ssl_cert = self.http_opts
+    _, _, _, _, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies = self.http_opts
 
     auth = None
     if auth_creds:
@@ -114,9 +130,10 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
     self.session.auth = auth
     self.session.cert = ssl_cert
     self.session.verify = False
+    self.session.cookies.set_policy(CustomCookiePolicy(accepted_cookies))
 
   def test(self, payload):
-    url, method, body, headers, _, _, _, _ = self.http_opts
+    url, method, body, headers, _, _, _, _, accepted_cookies = self.http_opts
 
     url, body, headers = substitute_payload(self.encode_payload(payload), url, body, '\r\n'.join(headers))
 
@@ -148,7 +165,7 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     fp.setopt(pycurl.USERAGENT, 'Mozilla/5.0')
     fp.setopt(pycurl.NOSIGNAL, 1)
 
-    _, _, _, _, auth_type, auth_creds, proxies, ssl_cert = self.http_opts
+    _, _, _, _, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies = self.http_opts
 
     if proxies:
       fp.setopt(pycurl.PROXY, proxies['http'] or proxies['https'])
@@ -166,6 +183,9 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     
     if ssl_cert:
       fp.setopt(pycurl.SSLCERT, ssl_cert)
+
+    if self.accepted_cookies:
+      fp.setopt(pycurl.COOKIEFILE, '')
 
     def noop(buf): pass
     fp.setopt(pycurl.WRITEFUNCTION, noop)
@@ -474,11 +494,11 @@ class SQLi_Base:
 
     if opts.enum_tables:
       for db in opts.db.split(','):
-        queries.append(self.enum_tables(opts.db))
+        queries.append(self.enum_tables(db))
 
     if opts.enum_columns:
       for table in opts.table.split(','):
-        queries.append(self.enum_columns(opts.db, opts.table))
+        queries.append(self.enum_columns(opts.db, table))
 
     if opts.dump_table:
       queries.append(self.dump_table(opts.db, opts.table, opts.column.split(',')))
@@ -496,7 +516,7 @@ class SQLi_Base:
       except KeyboardInterrupt:
         print
 
-    logger.info("Time: %.2f seconds" % (timing.time))
+    logger.info("Time: %s" % pprint_seconds(timing.time, '%dh %dm %ds'))
 
 # }}}
 
