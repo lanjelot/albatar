@@ -500,7 +500,7 @@ class SQLi_Base:
         queries.append(self.enum_columns(opts.db, table))
 
     if opts.dump_table:
-      queries.append(self.dump_table(opts.db, opts.table, opts.column.split(',')))
+      queries.append(self.dump_table(opts.db, opts.table, opts.column))
 
     if opts.query:
       queries.append(opts.query)
