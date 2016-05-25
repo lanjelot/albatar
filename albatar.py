@@ -125,10 +125,15 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
         auth = requests.auth.HTTPBasicAuth(u, p)
 
     self.session = requests.Session()
-    self.session.proxies = proxies
-    self.session.auth = auth
-    self.session.cert = ssl_cert
-    self.session.verify = False
+
+    self.request_kwargs = {
+      'auth': auth,
+      'proxies': proxies,
+      'cert': ssl_cert,
+      'verify': False,
+      'allow_redirects': False,
+    }
+
     self.session.cookies.set_policy(CustomCookiePolicy(accepted_cookies))
 
   def test(self, payload):
@@ -141,7 +146,7 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
     if method.upper() == 'POST':
       headers['Content-Type'] = 'application/x-www-form-urlencoded'
 
-    response = self.session.request(url=url, method=method, headers=headers, data=body, allow_redirects=False)
+    response = self.session.request(url=url, method=method, headers=headers, data=body, **self.request_kwargs)
 
     header_data = '\r\n'.join('%s: %s' % (k, v) for k, v in response.headers.iteritems())
 
