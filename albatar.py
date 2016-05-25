@@ -132,7 +132,7 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
     self.session.cookies.set_policy(CustomCookiePolicy(accepted_cookies))
 
   def test(self, payload):
-    url, method, body, headers, _, _, _, _, accepted_cookies = self.http_opts
+    url, method, body, headers, _, _, _, _, _ = self.http_opts
 
     url, body, headers = substitute_payload(self.encode_payload(payload), url, body, '\r\n'.join(headers))
 
@@ -183,7 +183,7 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     if ssl_cert:
       fp.setopt(pycurl.SSLCERT, ssl_cert)
 
-    if self.accepted_cookies:
+    if accepted_cookies:
       fp.setopt(pycurl.COOKIEFILE, '')
 
     def noop(buf): pass
@@ -193,7 +193,7 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     self.fp = fp
 
   def test(self, payload):
-    url, method, body, headers, auth_type, auth_creds, proxy, ssl_cert = self.http_opts
+    url, method, body, headers, auth_type, auth_creds, proxy, ssl_cert, _ = self.http_opts
 
     def debug_func(t, s):
       if t == pycurl.INFOTYPE_HEADER_IN:
