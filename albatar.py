@@ -337,11 +337,9 @@ class Method_bitwise(Method_Blind):
   def get_state(self):
     while True:
       try:
-        tid, state = self.resultq.get_nowait()
-        break
+        return self.resultq.get_nowait()
       except Empty:
         sleep(.1)
-    return tid, state
 
   def get_row(self, query, row_pos=0):
     logger.debug('query: %s' % query)
