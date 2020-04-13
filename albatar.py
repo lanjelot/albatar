@@ -15,7 +15,7 @@ __author__  = 'Sebastien Macke'
 __email__   = 'lanjelot@gmail.com'
 __url__     = 'https://github.com/lanjelot/albatar'
 __twitter__ = 'https://twitter.com/lanjelot'
-__version__ = '0.0'
+__version__ = '0.1'
 __license__ = 'GPLv2'
 __banner__  = 'Albatar v%s (%s)' % (__version__, __url__)
 
@@ -36,10 +36,11 @@ logger = logging.getLogger('albatar')
 logger.setLevel(logging.DEBUG)
 logger.addHandler(fh)
 
-from Queue import Queue, Empty
+from functools import reduce
+from queue import Queue, Empty
 from time import localtime, strftime, sleep, time
 from threading import Thread
-from urlparse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse
 from string import Template
 import sys
 
@@ -54,12 +55,12 @@ except ImportError:
 
 try:
   import pycurl
-  from StringIO import StringIO
+  from io import StringIO
 except ImportError:
   missing.append('pycurl')
 
 if len(missing) == 2:
-  logger.error('python-requests or pycurl required')
+  logger.error('requests or pycurl required')
 
 def pprint_seconds(seconds, fmt):
   return fmt % reduce(lambda x,y: divmod(x[0], y) + x[1:], [(seconds,), 60, 60])
@@ -68,10 +69,10 @@ def T(s, **kwargs):
   return Template(s).safe_substitute(**kwargs)
 
 def substitute_payload(payload, *args):
-    new = []
-    for arg in args:
-      new.append(arg.replace('${injection}', payload))
-    return new
+  new = []
+  for arg in args:
+    new.append(arg.replace('${injection}', payload))
+  return new
 
 class Timing:
   def __enter__(self):
@@ -87,8 +88,8 @@ class Timing:
 class Requester_HTTP_Base(object):
 
   def __init__(self, response_processor, url, method='GET', body='', headers=[],
-    auth_type='basic', auth_creds='', proxies={}, ssl_cert='', encode_payload=lambda x: x,
-    accepted_cookies=[]):
+      auth_type='basic', auth_creds='', proxies={}, ssl_cert='', encode_payload=lambda x: x,
+      accepted_cookies=[]):
 
     self.response_processor = response_processor
     self.http_opts = [url, method, body, headers, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies]
@@ -100,8 +101,9 @@ class Requester_HTTP_Base(object):
 
     return self.response_processor(header_data, response_data, response_time)
 
-from cookielib import DefaultCookiePolicy
+from http.cookiejar import DefaultCookiePolicy
 class CustomCookiePolicy(DefaultCookiePolicy):
+
   def __init__(self, accepted_cookies):
     self.accepted_cookies = accepted_cookies
     DefaultCookiePolicy.__init__(self)
@@ -149,7 +151,7 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
 
     response = self.session.request(url=url, method=method, headers=headers, data=body, **self.request_kwargs)
 
-    header_data = '\r\n'.join('%s: %s' % (k, v) for k, v in response.headers.iteritems())
+    header_data = '\r\n'.join('%s: %s' % (k, v) for k, v in response.headers.items())
 
     if 'content-length' in response.headers:
       content_length = response.headers['content-length']
@@ -209,6 +211,7 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
 
       elif t == pycurl.INFOTYPE_DATA_IN:
         response_buffer.write(s)
+
     header_buffer, response_buffer = StringIO(), StringIO()
 
     fp = self.fp
@@ -267,7 +270,7 @@ class Method_Base(object):
   def prepare(self, query, start_offset, stop_offset):
     start_index, stop_index = int(start_offset), int(stop_offset)
 
-    if isinstance(query, basestring):
+    if isinstance(query, str):
       q = query
       stop_index = 1
 
@@ -432,7 +435,7 @@ class Method_binary(Method_Blind):
       hi = len(charset) - 1
 
       while lo <= hi:
-        mid = (lo + hi) / 2
+        mid = (lo + hi) // 2
 
         payload = make_payload(self.template, ('query', query), ('row_pos', row_pos), ('char_pos', char_pos), ('comparator', '>'), ('char_ord', ord(charset[mid])))
         self.taskq.put_nowait((0, payload))
@@ -486,14 +489,14 @@ class Method_regexp(Method_Blind):
 
       while len(s) > 1:
 
-        left = s[:len(s) / 2]
-        right = s[len(s) / 2:]
+        left = s[:len(s) // 2]
+        right = s[len(s) // 2:]
 
         regexp = '^%s[%s]' % ('.' * len(result), left)
 
         if False: # hex-encode if server blacklists punctuation
           regexp = '^%s[%s]' % ('.' * len(result), left.replace('\\', '\\\\'))
-          regexp = '0x' + regexp.encode('hex')
+          regexp = '0x' + regexp.encode('utf-8').hex()
         else:
           regexp = "'^%s[%s]'" % ('.' * len(result), left.replace("'", "''").replace('\\', '\\\\\\\\'))
 
@@ -517,7 +520,7 @@ class Method_regexp(Method_Blind):
       logger.debug('char: %r (%d)' % (char, ord(char)))
 
       if self.confirm_char:
-        regexp = '0x%s' % ('^%s%s' % (result, char)).encode('hex')
+        regexp = '0x%s' % ('^%s%s' % (result, char)).encode('utf-8').hex()
         payload = make_payload(self.template, ('query', query), ('regexp', regexp), ('row_pos', row_pos))
         self.taskq.put_nowait((0, payload))
 
@@ -646,7 +649,7 @@ class SQLi_Base:
           for result in self.method.execute(query, start_offset=opts.start_offset, stop_offset=opts.stop_offset):
             yield result
       except KeyboardInterrupt:
-        print
+        print()
 
     logger.info("Time: %s" % pprint_seconds(timing.time, '%dh %dm %ds'))
 

