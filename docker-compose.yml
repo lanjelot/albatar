@@ -1,0 +1,37 @@
+version: "3"
+services:
+  lamp: 
+    build: testing/lamp
+    image: testing-lamp
+    ports:
+      - "80:80"
+      - "3306:3306"
+    depends_on:
+      - oracle
+      - mssql
+    volumes:
+      - ./testing/lamp/:/var/www/html/demo/
+
+  oracle:
+    image: oracleinanutshell/oracle-xe-11g
+    environment:
+      #- ORACLE_ENABLE_XDB=true
+      - ORACLE_DISABLE_ASYNCH_IO=true
+    ports:
+      - "1521:1521"
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=Password1
+    ports:
+      - "1433:1433"
+
+  albatar:
+    build: .
+    image: albatar
+    depends_on:
+      - lamp
+    volumes:
+      - .:/opt/albatar

