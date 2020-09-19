@@ -89,10 +89,10 @@ class Requester_HTTP_Base(object):
 
   def __init__(self, response_processor, url, method='GET', body='', headers=[],
       auth_type='basic', auth_creds='', proxies={}, ssl_cert='', encode_payload=lambda x: x,
-      accepted_cookies=[]):
+      accepted_cookies=[], allow_redirects=False):
 
     self.response_processor = response_processor
-    self.http_opts = [url, method, body, headers, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies]
+    self.http_opts = [url, method, body, headers, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies, allow_redirects]
     self.encode_payload = encode_payload
 
   def review_response(self, payload, status_code, header_data, response_data, response_time, content_length):
@@ -119,7 +119,7 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
   def __init__(self, *args, **kwargs):
     super(Requester_HTTP_requests, self).__init__(*args, **kwargs)
 
-    _, _, _, _, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies = self.http_opts
+    _, _, _, _, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies, allow_redirects = self.http_opts
 
     auth = None
     if auth_creds:
@@ -134,13 +134,13 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
       'proxies': proxies,
       'cert': ssl_cert,
       'verify': False,
-      'allow_redirects': False,
+      'allow_redirects': allow_redirects,
     }
 
     self.session.cookies.set_policy(CustomCookiePolicy(accepted_cookies))
 
   def test(self, payload):
-    url, method, body, headers, _, _, _, _, _ = self.http_opts
+    url, method, body, headers, _, _, _, _, _, _ = self.http_opts
 
     url, body, headers = substitute_payload(self.encode_payload(payload), url, body, '\r\n'.join(headers))
 
