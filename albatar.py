@@ -91,8 +91,18 @@ class Requester_HTTP_Base(object):
       auth_type='basic', auth_creds='', proxies={}, ssl_cert='', encode_payload=lambda x: x,
       accepted_cookies=[], allow_redirects=False):
 
+    self.url = url
+    self.method = method
+    self.body = body
+    self.headers = headers
+    self.auth_type = auth_type
+    self.auth_creds = auth_creds
+    self.proxies = proxies
+    self.ssl_cert = ssl_cert
+    self.accepted_cookies = accepted_cookies
+    self.allow_redirects = allow_redirects
+
     self.response_processor = response_processor
-    self.http_opts = [url, method, body, headers, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies, allow_redirects]
     self.encode_payload = encode_payload
 
   def review_response(self, payload, status_code, header_data, response_data, response_time, content_length):
@@ -117,30 +127,30 @@ class CustomCookiePolicy(DefaultCookiePolicy):
 class Requester_HTTP_requests(Requester_HTTP_Base):
 
   def __init__(self, *args, **kwargs):
-    super(Requester_HTTP_requests, self).__init__(*args, **kwargs)
-
-    _, _, _, _, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies, allow_redirects = self.http_opts
+    super().__init__(*args, **kwargs)
 
     auth = None
+    auth_type = self.auth_type
+    auth_creds = self.auth_creds
+
     if auth_creds:
       if auth_type == 'basic':
         u, p = auth_creds.split(':', 1)
         auth = requests.auth.HTTPBasicAuth(u, p)
 
-    self.session = requests.Session()
-
     self.request_kwargs = {
       'auth': auth,
-      'proxies': proxies,
-      'cert': ssl_cert,
+      'proxies': self.proxies,
+      'cert': self.ssl_cert,
       'verify': False,
-      'allow_redirects': allow_redirects,
+      'allow_redirects': self.allow_redirects,
     }
 
-    self.session.cookies.set_policy(CustomCookiePolicy(accepted_cookies))
+    self.session = requests.Session()
+    self.session.cookies.set_policy(CustomCookiePolicy(self.accepted_cookies))
 
   def test(self, payload):
-    url, method, body, headers, _, _, _, _, _, _ = self.http_opts
+    url, method, body, headers = self.url, self.method, self.body, self.headers
 
     url, body, headers = substitute_payload(self.encode_payload(payload), url, body, '\r\n'.join(headers))
 
@@ -163,7 +173,7 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
 class Requester_HTTP_pycurl(Requester_HTTP_Base):
 
   def __init__(self, *args, **kwargs):
-    super(Requester_HTTP_pycurl, self).__init__(*args, **kwargs)
+    super().__init__(*args, **kwargs)
 
     fp = pycurl.Curl()
     fp.setopt(pycurl.SSL_VERIFYPEER, 0)
@@ -172,7 +182,10 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     fp.setopt(pycurl.USERAGENT, 'Mozilla/5.0')
     fp.setopt(pycurl.NOSIGNAL, 1)
 
-    _, _, _, _, auth_type, auth_creds, proxies, ssl_cert, accepted_cookies = self.http_opts
+    auth_type, auth_creds, proxies, ssl_cert, accepted_cookies, allow_redirects = \
+      self.auth_type, self.auth_creds, self.proxies, self.ssl_cert, self.accepted_cookies, self.allow_redirects
+
+    fp.setopt(pycurl.FOLLOWLOCATION, int(allow_redirects))
 
     if proxies:
       fp.setopt(pycurl.PROXY, proxies['http'] or proxies['https'])
@@ -203,9 +216,13 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     self.fp = fp
 
   def test(self, payload):
-    url, method, body, headers, auth_type, auth_creds, proxy, ssl_cert, _ = self.http_opts
+
+    url, method, body, headers, auth_type, auth_creds, proxy, ssl_cert = \
+      self.url, self.method, self.body, self.headers, self.auth_type, self.auth_creds, self.proxies, self.ssl_cert
 
     def debug_func(t, s):
+      s = s.decode(errors='ignore')
+
       if t == pycurl.INFOTYPE_HEADER_IN:
         header_buffer.write(s)
 
