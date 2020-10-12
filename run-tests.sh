@@ -22,19 +22,27 @@ run()
   sed -i -e 's,^sqli =,#sqli =,' -e "/^#sqli = $1/ s,^#,," demo.py
   echo "$ $@"
   docker-compose run --no-deps --rm --entrypoint 'timeout 15s python3 demo.py' albatar "$@"
-  echo
 }
 
 run 'MySQL_Inband(mysql_union())' -b --current-user --current-db --users --passwords --dbs
 run 'MySQL_Inband(mysql_error())' -b
-run 'MySQL_Blind(mysql_boolean())' -b
-run 'MySQL_Blind(mysql_boolean_regexp())' -b
-run 'MySQL_Blind(mysql_boolean_binary())' -b
-run 'MySQL_Blind(mysql_time())' -b
 
 run 'MySQL_Inband(mysql_union())' -D anime_db --tables
 run 'MySQL_Inband(mysql_union())' -D anime_db -T anime --columns
 run 'MySQL_Inband(mysql_union())' -D anime_db -T anime -C id,name --dump
+
+run 'MySQL_Blind(mysql_boolean_bitwise())' -b
+run 'MySQL_Blind(mysql_boolean_regexp())' -b
+run 'MySQL_Blind(mysql_boolean_binary())' -b
+run 'MySQL_Blind(mysql_time())' -b
+
+run 'MySQL_Blind(mysql_boolean_bitwise())' --current-user --current-db
+run 'MySQL_Blind(mysql_boolean_bitwise())' --dbs
+run 'MySQL_Blind(mysql_boolean_bitwise())' --users
+run 'MySQL_Blind(mysql_boolean_bitwise())' --passwords
+run 'MySQL_Blind(mysql_boolean_bitwise())' -D anime_db --tables
+run 'MySQL_Blind(mysql_boolean_bitwise())' -D anime_db -T anime --columns
+run 'MySQL_Blind(mysql_boolean_bitwise())' -D anime_db -T anime -C id,name --dump
 
 run 'MSSQL_Inband(mssql_union())' -b
 run 'MSSQL_Inband(mssql_error())' -b

