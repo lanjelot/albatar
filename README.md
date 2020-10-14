@@ -108,7 +108,6 @@ The web task [luhn-300](https://github.com/ctfs/write-ups-2016/tree/master/nullc
 ```python
 from albatar import *
 from baluhn import generate
-from urllib import quote
 
 PROXIES = {} #'http': 'http://127.0.0.1:8082', 'https': 'http://127.0.0.1:8082'}
 HEADERS = ['User-Agent: Mozilla/5.0']
