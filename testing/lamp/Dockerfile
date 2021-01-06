@@ -49,6 +49,8 @@ RUN wget https://download.oracle.com/otn_software/linux/instantclient/instantcli
 RUN echo instantclient,/opt/oracle/instantclient | pecl install oci8 \
  && echo extension=oci8.so > /etc/php/7.2/apache2/conf.d/20-oci8.ini
 
+RUN apt-get update && apt-get install -y postgresql-client php-pgsql
+
 RUN echo -e "echo Starting services\n\
 service mysql start\n\
 service apache2 start\n\

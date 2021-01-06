@@ -15,6 +15,10 @@ while :; do
   docker-compose logs oracle | grep -c 'Starting Oracle Database' | grep -q [2-9] \
    && docker-compose exec lamp bash /var/www/html/demo/setup-oracle.sh | grep -c 'row created' | grep -q 4 && break
 done
+while :; do
+  docker-compose logs postgres | grep -c 'PostgreSQL init process complete; ready for start up' | grep -q 1 \
+   && docker-compose exec lamp bash /var/www/html/demo/setup-postgres.sh | grep -c 'INSERT 0 1' | grep -q 4 && break
+done
 
 run()
 {
@@ -52,3 +56,6 @@ run 'MSSQL_Blind(mssql_time())' -b
 run 'Oracle_Inband(oracle_union())' -b
 #run 'Oracle_Inband(oracle_error())' -b # broken
 run 'Oracle_Blind(oracle_boolean())' -b
+
+run 'Postgres_Inband(postgres_union())' -b --current-user --current-db --dbs --users --passwords
+run 'Postgres_Blind(postgres_boolean())' -b

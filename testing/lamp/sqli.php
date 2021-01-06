@@ -63,6 +63,27 @@ function oracle() {
   return $rows;
 }
 
+function postgres() {
+  $db = pg_connect('host=postgres dbname=anime_db user=anime_user password=Password1')
+    or die('Failed to connect to Postgres: ' . pg_last_error());
+
+  $sql = 'SELECT * FROM anime';
+  if (isset($_REQUEST['id'])) {
+    $sql .= " WHERE id = ".$_REQUEST['id'];
+  }
+  $result = pg_query($db, $sql)
+    or die(pg_last_error());
+
+  $rows = pg_fetch_all($result, PGSQL_NUM);
+  if ($rows === false) {
+    $rows = array();
+  }
+  pg_free_result($result);
+  pg_close($db);
+
+  return $rows;
+}
+
 function render($rows) {
   //var_dump($rows);
   echo '<html><body><h2>Yay animes!</h2><table border="0">'.count($rows).' rows fetched', PHP_EOL;
@@ -85,6 +106,10 @@ break;
 
   case 'oracle':
 $rows = oracle();
+break;
+
+  case 'postgres':
+$rows = postgres();
 break;
 }
 render($rows);

