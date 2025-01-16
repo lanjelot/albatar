@@ -4,7 +4,7 @@ Unlike [sqlmap](http://sqlmap.org/), Albatar will not detect SQL injection vulne
 
 Albatar is a framework in Python. As a result, you need to write some Python code to be able to exploit the SQLI. Then simply invoke your script by passing sqlmap-like command line options (like --dbs, --banner etc.) to retrieve data from the database.
 
-Currently, Albatar supports MySQL, MSSQL and Oracle with the Union, Error, Boolean and Time techniques.
+Currently, Albatar supports MySQL, PostgreSQL, MSSQL and Oracle with the Union, Error, Boolean and Time techniques.
 
 ## Examples
 
