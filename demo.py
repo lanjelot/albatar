@@ -3,7 +3,7 @@
 from albatar import *
 import re
 
-PROXIES = {}#'http': 'http://127.0.0.1:8008', 'https': 'http://127.0.0.1:8008'}
+PROXIES = {}#'http': 'http://host.docker.internal:8080', 'https': 'http://host.docker.internal:8080'}
 HEADERS = ['User-Agent: Mozilla/5.0']
 
 def test_state_grep(headers, body, time):

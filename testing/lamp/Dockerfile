@@ -1,6 +1,4 @@
-FROM ubuntu:18.04
-
-MAINTAINER Sebastien Macke <lanjelot@gmail.com>
+FROM ubuntu:24.04
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -13,9 +11,10 @@ RUN MYSRP=Password1; \
  && apt-get update && apt-get install -y mysql-server \
  && sed -i -e "s/bind-address.*/bind-address = 0.0.0.0/" -e 's,^#general_log,general_log,' /etc/mysql/mysql.conf.d/mysqld.cnf \
  && echo secure_file_priv= >> /etc/mysql/mysql.conf.d/mysqld.cnf \
- && Q1="GRANT ALL ON *.* TO 'root'@'%' IDENTIFIED BY '$MYSRP' WITH GRANT OPTION;" \
+ && Q0="CREATE USER 'root'@'%' identified by '$MYSRL'" \
+ && Q1="GRANT ALL ON *.* TO 'root'@'%' WITH GRANT OPTION" \
  && Q2="FLUSH PRIVILEGES;" \
- && SQL="${Q1}${Q2}" \
+ && SQL="${Q0}; ${Q1}; ${Q2}" \
  && rm -f /etc/apparmor.d/usr.sbin.mysqld \
  && service mysql start \
  && mysql -uroot -p"$MYSRP" -e "$SQL"
@@ -26,28 +25,28 @@ RUN apt-get update && apt-get install -y php libapache2-mod-php php-mysql apache
 RUN apt-get update && apt-get install -y iproute2 lsof vim wget curl gnupg2 unzip \
  && echo 'set bg=dark' > /root/.vimrc
 
-RUN curl -s https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
-RUN curl -s -o /etc/apt/sources.list.d/msprod.list https://packages.microsoft.com/config/ubuntu/18.04/prod.list 
-RUN apt-get update && ACCEPT_EULA=Y apt-get install -y msodbcsql17 mssql-tools unixodbc-dev php-pear php7.2-dev \
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+RUN curl -s -o /etc/apt/sources.list.d/msprod.list https://packages.microsoft.com/config/ubuntu/24.04/prod.list 
+RUN apt-get update && ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18 unixodbc-dev php-pear php8.3-dev \
  && pecl install sqlsrv \
- && echo extension=sqlsrv.so > /etc/php/7.2/apache2/conf.d/20-sqlsrv.ini
+ && echo extension=sqlsrv.so > /etc/php/8.3/apache2/conf.d/20-sqlsrv.ini
 
 WORKDIR /opt/oracle
 RUN wget https://download.oracle.com/otn_software/linux/instantclient/instantclient-basiclite-linuxx64.zip \
  && wget https://download.oracle.com/otn_software/linux/instantclient/instantclient-sdk-linuxx64.zip \
  && wget https://download.oracle.com/otn_software/linux/instantclient/instantclient-sqlplus-linuxx64.zip \
- && unzip instantclient-basiclite-linuxx64.zip \
+ && unzip -o instantclient-basiclite-linuxx64.zip \
+ && unzip -o instantclient-sdk-linuxx64.zip \
+ && unzip -o instantclient-sqlplus-linuxx64.zip \
  && rm -f instantclient-basiclite-linuxx64.zip \
- && unzip instantclient-sdk-linuxx64.zip \
  && rm -f instantclient-sdk-linuxx64.zip \
- && unzip instantclient-sqlplus-linuxx64.zip \
  && rm -f instantclient-sqlplus-linuxx64.zip \
  && mv /opt/oracle/instantclient_* /opt/oracle/instantclient \
  && echo /opt/oracle/instantclient > /etc/ld.so.conf.d/oracle-instantclient.conf \
  && ldconfig
 
-RUN echo instantclient,/opt/oracle/instantclient | pecl install oci8-2.2.0 \
- && echo extension=oci8.so > /etc/php/7.2/apache2/conf.d/20-oci8.ini
+RUN echo instantclient,/opt/oracle/instantclient | pecl install oci8-3.4.0 \
+ && echo extension=oci8.so > /etc/php/8.3/apache2/conf.d/20-oci8.ini
 
 RUN apt-get update && apt-get install -y postgresql-client php-pgsql
 

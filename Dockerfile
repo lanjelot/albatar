@@ -1,15 +1,18 @@
-FROM ubuntu:20.04
+FROM python:3-alpine
 
-MAINTAINER Sebastien Macke <lanjelot@gmail.com>
+RUN apk add --no-cache libcurl
 
-ENV DEBIAN_FRONTEND=noninteractive 
+# for pycurl
+ENV PYCURL_SSL_LIBRARY=openssl
 
-RUN apt-get update && apt-get install -y python3-dev python3-pip libcurl4-openssl-dev python3-dev libssl-dev
-RUN python3 -m pip install requests pycurl
+RUN apk add --no-cache --virtual .build-deps build-base curl-dev \
+  && python3 -m ensurepip --upgrade \
+  && pip install -U requests pycurl \
+  && apk del --purge .build-deps
 
 WORKDIR /opt/albatar
-ENTRYPOINT ["python3", "demo.py"]
+ENTRYPOINT ["python3"]
 
 # usage:
 # docker build -t albatar .
-# docker run -v $PWD:/opt/albatar --rm -it albatar -h
+# docker run --rm -it -v $PWD:/opt/albatar --add-host=host.docker.internal:host-gateway albatar poc.py -h

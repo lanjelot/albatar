@@ -2,9 +2,18 @@ I wrote Albatar to have a neat and tidy tool to exploit SQL injection vulnerabil
 
 Unlike [sqlmap](http://sqlmap.org/), Albatar will not detect SQL injection vulnerabilities, it is primarily designed to help exploit not-so-straightforward injections where sqlmap would need tweaking and patching to work.
 
-Albatar is a framework in Python. As a result, you need to write some Python code to be able to exploit the SQLI. Then simply invoke your script by passing sqlmap-like command line options (like --dbs, --banner etc.) to retrieve data from the database.
+Albatar is a framework in Python. As a result, you need to write some Python code to be able to exploit the SQLI.
+Then simply invoke your script by passing sqlmap-like command line options (like --dbs, --banner etc.) to retrieve data from the database.
 
-Currently, Albatar supports MySQL, PostgreSQL, MSSQL and Oracle with the Union, Error, Boolean and Time techniques.
+Currently, Albatar supports MySQL, MSSQL, PostgreSQL and Oracle with the Union, Error, Boolean and Time techniques.
+
+## Install
+
+```
+$ git clone https://github.com/lanjelot/albatar && cd albatar
+$ docker build -t albatar .
+$ docker run --rm -it -v $(pwd):/opt/albatar --add-host=host.docker.internal:host-gateway albatar poc.py -h
+```
 
 ## Examples
 

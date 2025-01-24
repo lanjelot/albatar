@@ -1,6 +1,5 @@
-version: "3"
 services:
-  lamp: 
+  lamp:
     build: testing/lamp
     image: testing-lamp
     ports:
